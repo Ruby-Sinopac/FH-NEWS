@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""金控（含子公司）新聞每月彙整 — 用公司名稱搜尋，原始抓取後做篩選。
-需求：pip install requests openpyxl"""
+"""金控（含子公司）新聞 + 重大訊息每月彙整。
+
+- 新聞：用公司名稱搜 Google News RSS，抓取後做篩選（雜訊/來源/名稱誤判）。
+- 重訊：用公司代號查公開資訊觀測站(MOPS) t05st01 歷史重大訊息。
+- 兩者放進「同一個金控分頁」，並一起依時間順序排列；被篩除的新聞另存分頁。
+
+需求：pip install requests openpyxl pandas lxml
+"""
 
 import datetime
+import io
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
+import pandas as pd
 import requests
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 # ── 設定（要增減金控或子公司，改這裡的名稱清單即可）──────────────
+# key 的開頭數字 = 金控股票代號，會用來查 MOPS 重訊。
 GROUPS = {
     "2881 富邦金": ["富邦金控", "台北富邦銀行", "富邦人壽", "富邦產險", "富邦證券", "富邦投信"],
     "2882 國泰金": ["國泰金控", "國泰世華銀行", "國泰人壽", "國泰產險", "國泰證券", "國泰投信"],
@@ -24,11 +33,15 @@ GROUPS = {
     "2890 永豐金": ["永豐金控", "永豐銀行", "永豐金證券", "永豐投信", "永豐期貨", "京城銀行"],
     "2891 中信金": ["中信金控", "中國信託銀行", "台灣人壽", "中國信託證券", "中國信託投信", "中信創投"],
 }
-DAYS_BACK = 30   # 往前抓幾天（以執行當下為基準）
+# 旗下另有「單獨上市」、想單獨查重訊的子公司，填在這裡（金控key -> [代號,...]）：
+EXTRA_MOPS_CODES = {
+    # "2890 永豐金": ["2809"],   # 京城銀行
+    # "2884 玉山金": ["2867"],   # 三商美邦人壽
+}
+DAYS_BACK = 30   # 往前抓幾天（新聞與重訊共用）
 
-# ── 篩選設定（要鬆綁或加嚴，調整下面三組即可）─────────────────────
+# ── 新聞篩選設定（要鬆綁或加嚴，調整下面三組即可）────────────────
 # (1) 雜訊關鍵字：標題只要含任一詞就剔除（股價/盤中閒聊、廣告/業配/活動）
-#     不想濾掉某詞，把它刪掉或在前面加 "#" 不適用，直接從清單移除即可。
 NOISE_KEYWORDS = [
     # ── 股價／盤中閒聊 ──
     "盤中", "盤後", "盤前", "盤勢", "個股", "股價", "技術分析", "目標價",
@@ -51,9 +64,7 @@ SOURCE_WHITELIST = [
 ]
 
 # (3) 名稱誤判：標題必須真的出現公司名（或下方別名）才保留，避免同名誤判
-#     （例：玉山＝山岳、國泰＝泛用詞，只在內文順帶提及的也會被剔除）
 REQUIRE_NAME_IN_TITLE = True
-# 別名（標題常用簡稱），會連同 GROUPS 內的全名一起比對
 ALIASES = {
     "台北富邦銀行": ["北富銀", "富邦銀"],
     "中國信託銀行": ["中信銀", "中國信託", "中信"],
@@ -74,7 +85,19 @@ ALIASES = {
 
 RSS = "https://news.google.com/rss/search?q={q}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
 
+MOPS = "https://mopsov.twse.com.tw/mops/web/ajax_t05st01"
+MOPS_PAGE = ("https://mopsov.twse.com.tw/mops/web/t05st01"
+             "?co_id={co_id}&year={year}&step=1&firstin=ture&TYPEK=all")
+MOPS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Referer": "https://mopsov.twse.com.tw/mops/web/t05st01",
+    "Origin": "https://mopsov.twse.com.tw",
+    "Content-Type": "application/x-www-form-urlencoded",
+}
 
+
+# ── 新聞抓取 ───────────────────────────────────────────────
 def fetch_google_news(name):
     """用公司名稱搜尋 Google 新聞 RSS，回傳 list[dict]。"""
     q = urllib.parse.quote(f'"{name}" when:{DAYS_BACK}d')
@@ -93,25 +116,23 @@ def fetch_google_news(name):
             d = parsedate_to_datetime(pub).date()
         except Exception:
             d = None
-        out.append({"entity": name, "date": d, "title": title, "source": source, "link": link})
+        out.append({"kind": "新聞", "entity": name, "date": d, "time": "",
+                    "title": title, "source": source, "link": link})
     return out
 
 
-# ── 篩選函式 ───────────────────────────────────────────────
+# ── 新聞篩選 ───────────────────────────────────────────────
 def is_noise(title):
-    """標題含雜訊關鍵字 → True（要剔除）。"""
     return any(kw in title for kw in NOISE_KEYWORDS)
 
 
 def source_ok(source):
-    """來源在白名單內（或白名單為空）→ True（保留）。"""
     if not SOURCE_WHITELIST:
         return True
     return any(s in source for s in SOURCE_WHITELIST)
 
 
 def title_has_name(title, entity):
-    """標題確實出現公司名或其別名 → True（保留）。"""
     if not REQUIRE_NAME_IN_TITLE:
         return True
     names = [entity] + ALIASES.get(entity, [])
@@ -119,7 +140,7 @@ def title_has_name(title, entity):
 
 
 def drop_reason(n):
-    """回傳篩除原因字串；若應保留則回傳空字串 ""。"""
+    """回傳新聞篩除原因；若應保留則回傳空字串 ""。"""
     if is_noise(n["title"]):
         return "雜訊關鍵字"
     if not source_ok(n["source"]):
@@ -127,11 +148,75 @@ def drop_reason(n):
     if not title_has_name(n["title"], n["entity"]):
         return "標題未出現公司名"
     return ""
-# ───────────────────────────────────────────────────────────
 
 
-def build_excel(all_news, dropped_news, start_date, end_date, out_path):
+# ── 重大訊息抓取（MOPS）─────────────────────────────────────
+def roc_year(d):
+    return d.year - 1911
+
+
+def parse_roc_date(s):
+    """民國日期字串（115/06/10）→ datetime.date；失敗回 None。"""
+    try:
+        y, m, d = (int(x) for x in str(s).strip().split("/"))
+        return datetime.date(y + 1911, m, d)
+    except Exception:
+        return None
+
+
+def fetch_material(co_id, name, year):
+    """抓某公司某民國年的重大訊息，回傳 list[dict]（已轉成共用格式）。"""
+    data = {"encodeURIComponent": "1", "step": "1", "firstin": "1", "off": "1",
+            "TYPEK": "all", "co_id": co_id, "year": str(year)}
+    r = requests.post(MOPS, data=data, headers=MOPS_HEADERS, timeout=30)
+    r.raise_for_status()
+    r.encoding = "utf-8"
+    try:
+        tables = pd.read_html(io.StringIO(r.text))
+    except ValueError:
+        return []
+
+    target = None
+    for t in tables:
+        if any("主旨" in str(c) for c in t.columns):
+            if target is None or len(t) > len(target):
+                target = t
+    if target is None:
+        return []
+
+    def pick(cols, *keys):
+        for c in cols:
+            if any(k in str(c) for k in keys):
+                return c
+        return None
+
+    cols = list(target.columns)
+    c_date = pick(cols, "發言日期", "日期")
+    c_time = pick(cols, "發言時間", "時間")
+    c_subj = pick(cols, "主旨")
+    link = MOPS_PAGE.format(co_id=co_id, year=year)
+
+    out = []
+    for _, row in target.iterrows():
+        subj = str(row.get(c_subj, "")).strip()
+        if not subj or subj == "nan":
+            continue
+        out.append({"kind": "重訊", "entity": name,
+                    "date": parse_roc_date(row.get(c_date, "")),
+                    "time": str(row.get(c_time, "")).strip(),
+                    "title": subj, "source": "公開資訊觀測站", "link": link})
+    return out
+
+
+# ── 排序鍵：新聞與重訊一起依時間排（新到舊）──
+def sort_key(n):
+    return (n["date"] or datetime.date.min, n["time"] or "")
+
+
+# ── 輸出 Excel ─────────────────────────────────────────────
+def build_excel(all_items, dropped_news, start_date, end_date, out_path):
     hf = PatternFill("solid", fgColor="1F4E78")
+    sub_fill = PatternFill("solid", fgColor="FCE4D6")      # 重訊列底色
     hfont = Font(color="FFFFFF", bold=True)
     tfont = Font(bold=True, size=14)
     lfont = Font(bold=True, color="555555")
@@ -143,28 +228,36 @@ def build_excel(all_news, dropped_news, start_date, end_date, out_path):
     wb = Workbook()
     ov = wb.active
     ov.title = "總覽"
-    ov["A1"] = "金控（含子公司）新聞彙整（已篩選）"
+    ov["A1"] = "金控 新聞 + 重大訊息 彙整（已篩選）"
     ov["A1"].font = tfont
     ov["A2"] = f"資料區間：{start_date} ~ {end_date}"
     ov["A2"].font = lfont
-    for c, h in enumerate(["金控", "新聞則數"], start=1):
+    for c, h in enumerate(["金控", "新聞則數", "重訊則數", "合計"], start=1):
         cell = ov.cell(row=4, column=c, value=h)
         cell.fill, cell.font, cell.border = hf, hfont, bd
     r = 5
-    for grp, items in all_news.items():
+    for grp, items in all_items.items():
+        n_news = sum(1 for n in items if n["kind"] == "新聞")
+        n_mops = sum(1 for n in items if n["kind"] == "重訊")
         ov.cell(row=r, column=1, value=grp).border = bd
-        ov.cell(row=r, column=2, value=len(items)).border = bd
+        ov.cell(row=r, column=2, value=n_news).border = bd
+        ov.cell(row=r, column=3, value=n_mops).border = bd
+        ov.cell(row=r, column=4, value=len(items)).border = bd
         r += 1
-    ov.column_dimensions["A"].width = 18
-    ov.column_dimensions["B"].width = 10
+    for col, w in zip("ABCD", (18, 10, 10, 8)):
+        ov.column_dimensions[col].width = w
 
-    cols = [("日期", 12), ("公司", 15), ("標題", 60), ("來源", 18), ("連結", 46)]
-    for grp, items in all_news.items():
+    cols = [("日期", 12), ("類型", 7), ("公司", 15), ("標題／主旨", 60),
+            ("來源", 18), ("連結", 46)]
+    for grp, items in all_items.items():
         ws = wb.create_sheet(title=grp[:31])
-        items = sorted(items, key=lambda n: (n["date"] or datetime.date.min), reverse=True)
+        items = sorted(items, key=sort_key, reverse=True)
         ws["A1"] = grp
         ws["A1"].font = tfont
-        ws["A2"] = f"資料區間：{start_date} ~ {end_date}（共 {len(items)} 則，已篩選）"
+        n_news = sum(1 for n in items if n["kind"] == "新聞")
+        n_mops = sum(1 for n in items if n["kind"] == "重訊")
+        ws["A2"] = (f"資料區間：{start_date} ~ {end_date}"
+                    f"（新聞 {n_news} 則、重訊 {n_mops} 則，依時間排序）")
         ws["A2"].font = lfont
         for c, (h, w) in enumerate(cols, start=1):
             cell = ws.cell(row=4, column=c, value=h)
@@ -172,21 +265,28 @@ def build_excel(all_news, dropped_news, start_date, end_date, out_path):
             ws.column_dimensions[get_column_letter(c)].width = w
         rr = 5
         if not items:
-            ws.cell(row=rr, column=1, value="（本期間查無新聞）")
+            ws.cell(row=rr, column=1, value="（本期間查無資料）")
         for n in items:
-            ws.cell(row=rr, column=1, value=n["date"].isoformat() if n["date"] else "").border = bd
-            ws.cell(row=rr, column=2, value=n["entity"]).border = bd
-            c3 = ws.cell(row=rr, column=3, value=n["title"])
-            c3.alignment, c3.border = wrap, bd
-            ws.cell(row=rr, column=4, value=n["source"]).border = bd
-            c5 = ws.cell(row=rr, column=5, value=n["link"])
+            is_mops = n["kind"] == "重訊"
+            ws.cell(row=rr, column=1,
+                    value=n["date"].isoformat() if n["date"] else "").border = bd
+            ws.cell(row=rr, column=2, value=n["kind"]).border = bd
+            ws.cell(row=rr, column=3, value=n["entity"]).border = bd
+            c4 = ws.cell(row=rr, column=4, value=n["title"])
+            c4.alignment, c4.border = wrap, bd
+            ws.cell(row=rr, column=5, value=n["source"]).border = bd
+            c6 = ws.cell(row=rr, column=6, value=n["link"])
             if n["link"]:
-                c5.hyperlink, c5.font = n["link"], lkfont
-            c5.border = bd
+                c6.hyperlink, c6.font = n["link"], lkfont
+            c6.border = bd
+            if is_mops:                                   # 重訊整列上色，易辨識
+                for c in range(1, 7):
+                    if c != 6:
+                        ws.cell(row=rr, column=c).fill = sub_fill
             rr += 1
         ws.freeze_panes = "A5"
 
-    # ── 已篩除分頁（含篩除原因，方便檢查有無誤殺）──
+    # ── 已篩除分頁（新聞，含篩除原因）──
     ws = wb.create_sheet(title="已篩除")
     dcols = [("日期", 12), ("金控", 16), ("公司", 15), ("標題", 56),
              ("來源", 18), ("篩除原因", 14), ("連結", 40)]
@@ -201,8 +301,9 @@ def build_excel(all_news, dropped_news, start_date, end_date, out_path):
     rr = 5
     if not dropped_news:
         ws.cell(row=rr, column=1, value="（沒有任何新聞被篩除）")
-    for n in sorted(dropped_news, key=lambda n: (n["date"] or datetime.date.min), reverse=True):
-        ws.cell(row=rr, column=1, value=n["date"].isoformat() if n["date"] else "").border = bd
+    for n in sorted(dropped_news, key=sort_key, reverse=True):
+        ws.cell(row=rr, column=1,
+                value=n["date"].isoformat() if n["date"] else "").border = bd
         ws.cell(row=rr, column=2, value=n["group"]).border = bd
         ws.cell(row=rr, column=3, value=n["entity"]).border = bd
         c4 = ws.cell(row=rr, column=4, value=n["title"])
@@ -223,46 +324,68 @@ def main():
     today = datetime.date.today()
     cutoff = today - datetime.timedelta(days=DAYS_BACK)
     start_date, end_date = cutoff.isoformat(), today.isoformat()
-    out_path = f"金控新聞_{today.strftime('%Y-%m')}.xlsx"
+    out_path = f"金控彙整_{today.strftime('%Y-%m')}.xlsx"
+    years = sorted({roc_year(cutoff), roc_year(today)}, reverse=True)
 
-    print(f"抓取區間：{start_date} ~ {end_date}")
-    all_news = {}
-    dropped_news = []                              # 跨金控彙整所有被篩除的新聞
-    total_raw = total_kept = 0
+    print(f"抓取區間：{start_date} ~ {end_date}（重訊民國年 {years}）")
+    all_items = {}
+    dropped_news = []
     for grp, names in GROUPS.items():
         print(f"• {grp}")
         seen, dseen, items = set(), set(), []
-        raw_cnt = dropped = 0
+        grp_name = " ".join(grp.split()[1:]) or grp     # 去掉代號的金控名
+
+        # 1) 新聞
+        n_raw = n_drop = 0
         for name in names:
             try:
                 rows = fetch_google_news(name)
             except Exception as e:
-                print(f"    {name} 失敗：{e}")
+                print(f"    新聞 {name} 失敗：{e}")
                 rows = []
             for n in rows:
                 if n["date"] and n["date"] < cutoff:
-                    continue                      # 超出區間
-                raw_cnt += 1
+                    continue
+                n_raw += 1
                 key = (n["title"][:40], n["link"])
                 reason = drop_reason(n)
-                if reason:                        # 篩除：雜訊/非白名單/名稱誤判
-                    dropped += 1
+                if reason:
+                    n_drop += 1
                     if key not in dseen:
                         dseen.add(key)
                         dropped_news.append({**n, "group": grp, "reason": reason})
                     continue
                 if key in seen:
-                    continue                      # 去重
+                    continue
                 seen.add(key)
                 items.append(n)
-            time.sleep(0.5)                       # 友善延遲
-        all_news[grp] = items
-        total_raw += raw_cnt
-        total_kept += len(items)
-        print(f"    原始 {raw_cnt} 則 → 篩掉 {dropped} 則 → 保留 {len(items)} 則")
-    build_excel(all_news, dropped_news, start_date, end_date, out_path)
-    print(f"完成：{out_path}（原始 {total_raw} 則 → 保留 {total_kept} 則，"
-          f"已篩除 {len(dropped_news)} 則另存分頁）")
+            time.sleep(0.5)
+        print(f"    新聞：原始 {n_raw} → 篩掉 {n_drop} → 保留 "
+              f"{sum(1 for n in items if n['kind'] == '新聞')} 則")
+
+        # 2) 重訊（金控代號 + 額外指定代號）
+        codes = [grp.split()[0]] + EXTRA_MOPS_CODES.get(grp, [])
+        m_cnt = 0
+        for co_id in codes:
+            for y in years:
+                try:
+                    rows = fetch_material(co_id, grp_name, y)
+                except Exception as e:
+                    print(f"    重訊 {co_id} 民國{y} 失敗：{e}")
+                    rows = []
+                for n in rows:
+                    if n["date"] and n["date"] < cutoff:
+                        continue
+                    items.append(n)
+                    m_cnt += 1
+                time.sleep(0.8)
+        print(f"    重訊：{m_cnt} 則")
+
+        all_items[grp] = items
+
+    build_excel(all_items, dropped_news, start_date, end_date, out_path)
+    total = sum(len(v) for v in all_items.values())
+    print(f"完成：{out_path}（合計 {total} 則，含已篩除 {len(dropped_news)} 則新聞另存分頁）")
 
 
 if __name__ == "__main__":
