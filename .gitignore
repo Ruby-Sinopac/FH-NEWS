@@ -1,0 +1,6 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 產出的 Excel
+金控新聞_*.xlsx
