@@ -11,9 +11,11 @@
 
 import datetime
 import io
+import re
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
+from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 
 import pandas as pd
@@ -39,6 +41,9 @@ EXTRA_MOPS_CODES = {
     # "2884 玉山金": ["2867"],   # 三商美邦人壽
 }
 DAYS_BACK = 30   # 往前抓幾天（新聞與重訊共用）
+# 同一金控內，標題相似度 >= 此門檻視為「同一則內容」，只保留先抓到的一篇。
+# 調高(接近1)=只併幾乎一樣的；調低=併得更兇（但可能誤併不同新聞）。
+DEDUP_THRESHOLD = 0.55
 
 # ── 新聞篩選設定（要鬆綁或加嚴，調整下面三組即可）────────────────
 # (1) 雜訊關鍵字：標題只要含任一詞就剔除（股價/盤中閒聊、廣告/業配/活動）
@@ -58,7 +63,7 @@ NOISE_KEYWORDS = [
 SOURCE_WHITELIST = [
     "經濟日報", "工商時報", "中央社", "鉅亨", "MoneyDJ", "財訊", "今周刊",
     "商業周刊", "自由財經", "自由時報", "聯合新聞網", "聯合報", "中時",
-    "ETtoday", "Yahoo", "信傳媒", "風傳媒", "鏡週刊", "鏡報", "天下", "遠見",
+    "ETtoday", "Yahoo", "信傳媒", "風傳媒", "鏡週刊", "鏡報", "遠見",
     "三立", "TVBS", "東森", "NOWnews", "新頭殼", "上報", "民視", "公視",
     "數位時代", "金融",
 ]
@@ -137,6 +142,20 @@ def title_has_name(title, entity):
         return True
     names = [entity] + ALIASES.get(entity, [])
     return any(n in title for n in names)
+
+
+def norm_title(title):
+    """正規化標題：去掉尾端「 - 來源」、移除標點與空白，方便比對是否同一則。"""
+    t = title.rsplit(" - ", 1)[0]
+    return re.sub(r"[\s\W_]+", "", t)
+
+
+def is_similar(nt, kept_norms):
+    """nt 與已保留的任一標題太像（同一則內容）→ True。"""
+    for k in kept_norms:
+        if nt == k or SequenceMatcher(None, nt, k).ratio() >= DEDUP_THRESHOLD:
+            return True
+    return False
 
 
 def drop_reason(n):
@@ -332,11 +351,11 @@ def main():
     dropped_news = []
     for grp, names in GROUPS.items():
         print(f"• {grp}")
-        seen, dseen, items = set(), set(), []
+        seen, dseen, items, kept_norms = set(), set(), [], []
         grp_name = " ".join(grp.split()[1:]) or grp     # 去掉代號的金控名
 
         # 1) 新聞
-        n_raw = n_drop = 0
+        n_raw = n_drop = n_dup = 0
         for name in names:
             try:
                 rows = fetch_google_news(name)
@@ -357,10 +376,15 @@ def main():
                     continue
                 if key in seen:
                     continue
+                nt = norm_title(n["title"])
+                if is_similar(nt, kept_norms):      # 同內容多篇報導，只留一篇
+                    n_dup += 1
+                    continue
                 seen.add(key)
+                kept_norms.append(nt)
                 items.append(n)
             time.sleep(0.5)
-        print(f"    新聞：原始 {n_raw} → 篩掉 {n_drop} → 保留 "
+        print(f"    新聞：原始 {n_raw} → 篩掉 {n_drop} → 去重 {n_dup} → 保留 "
               f"{sum(1 for n in items if n['kind'] == '新聞')} 則")
 
         # 2) 重訊（金控代號 + 額外指定代號）
