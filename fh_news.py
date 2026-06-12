@@ -118,19 +118,19 @@ def title_has_name(title, entity):
     return any(n in title for n in names)
 
 
-def keep_news(n):
-    """綜合判斷一則新聞是否保留。"""
+def drop_reason(n):
+    """回傳篩除原因字串；若應保留則回傳空字串 ""。"""
     if is_noise(n["title"]):
-        return False
+        return "雜訊關鍵字"
     if not source_ok(n["source"]):
-        return False
+        return "非白名單來源"
     if not title_has_name(n["title"], n["entity"]):
-        return False
-    return True
+        return "標題未出現公司名"
+    return ""
 # ───────────────────────────────────────────────────────────
 
 
-def build_excel(all_news, start_date, end_date, out_path):
+def build_excel(all_news, dropped_news, start_date, end_date, out_path):
     hf = PatternFill("solid", fgColor="1F4E78")
     hfont = Font(color="FFFFFF", bold=True)
     tfont = Font(bold=True, size=14)
@@ -185,6 +185,37 @@ def build_excel(all_news, start_date, end_date, out_path):
             c5.border = bd
             rr += 1
         ws.freeze_panes = "A5"
+
+    # ── 已篩除分頁（含篩除原因，方便檢查有無誤殺）──
+    ws = wb.create_sheet(title="已篩除")
+    dcols = [("日期", 12), ("金控", 16), ("公司", 15), ("標題", 56),
+             ("來源", 18), ("篩除原因", 14), ("連結", 40)]
+    ws["A1"] = "被篩除的新聞（自行檢查是否誤殺）"
+    ws["A1"].font = tfont
+    ws["A2"] = f"資料區間：{start_date} ~ {end_date}（共 {len(dropped_news)} 則）"
+    ws["A2"].font = lfont
+    for c, (h, w) in enumerate(dcols, start=1):
+        cell = ws.cell(row=4, column=c, value=h)
+        cell.fill, cell.font, cell.border = hf, hfont, bd
+        ws.column_dimensions[get_column_letter(c)].width = w
+    rr = 5
+    if not dropped_news:
+        ws.cell(row=rr, column=1, value="（沒有任何新聞被篩除）")
+    for n in sorted(dropped_news, key=lambda n: (n["date"] or datetime.date.min), reverse=True):
+        ws.cell(row=rr, column=1, value=n["date"].isoformat() if n["date"] else "").border = bd
+        ws.cell(row=rr, column=2, value=n["group"]).border = bd
+        ws.cell(row=rr, column=3, value=n["entity"]).border = bd
+        c4 = ws.cell(row=rr, column=4, value=n["title"])
+        c4.alignment, c4.border = wrap, bd
+        ws.cell(row=rr, column=5, value=n["source"]).border = bd
+        ws.cell(row=rr, column=6, value=n["reason"]).border = bd
+        c7 = ws.cell(row=rr, column=7, value=n["link"])
+        if n["link"]:
+            c7.hyperlink, c7.font = n["link"], lkfont
+        c7.border = bd
+        rr += 1
+    ws.freeze_panes = "A5"
+
     wb.save(out_path)
 
 
@@ -196,10 +227,11 @@ def main():
 
     print(f"抓取區間：{start_date} ~ {end_date}")
     all_news = {}
+    dropped_news = []                              # 跨金控彙整所有被篩除的新聞
     total_raw = total_kept = 0
     for grp, names in GROUPS.items():
         print(f"• {grp}")
-        seen, items = set(), []
+        seen, dseen, items = set(), set(), []
         raw_cnt = dropped = 0
         for name in names:
             try:
@@ -211,10 +243,14 @@ def main():
                 if n["date"] and n["date"] < cutoff:
                     continue                      # 超出區間
                 raw_cnt += 1
-                if not keep_news(n):
-                    dropped += 1
-                    continue                      # 篩選：剔除雜訊/非白名單/名稱誤判
                 key = (n["title"][:40], n["link"])
+                reason = drop_reason(n)
+                if reason:                        # 篩除：雜訊/非白名單/名稱誤判
+                    dropped += 1
+                    if key not in dseen:
+                        dseen.add(key)
+                        dropped_news.append({**n, "group": grp, "reason": reason})
+                    continue
                 if key in seen:
                     continue                      # 去重
                 seen.add(key)
@@ -224,8 +260,9 @@ def main():
         total_raw += raw_cnt
         total_kept += len(items)
         print(f"    原始 {raw_cnt} 則 → 篩掉 {dropped} 則 → 保留 {len(items)} 則")
-    build_excel(all_news, start_date, end_date, out_path)
-    print(f"完成：{out_path}（原始 {total_raw} 則 → 保留 {total_kept} 則）")
+    build_excel(all_news, dropped_news, start_date, end_date, out_path)
+    print(f"完成：{out_path}（原始 {total_raw} 則 → 保留 {total_kept} 則，"
+          f"已篩除 {len(dropped_news)} 則另存分頁）")
 
 
 if __name__ == "__main__":
