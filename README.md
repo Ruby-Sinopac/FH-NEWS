@@ -66,6 +66,21 @@ FROM cells c JOIN source_files f ON f.id = c.file_id
 WHERE c.header LIKE '%存款%' ORDER BY f.period;
 ```
 
+## 畫圖與修改
+
+SQLite 只負責「存資料」，要不要修改、怎麼畫圖都很自由：
+
+- **修改**：`UPDATE/INSERT/DELETE/ALTER`，或用 [DB Browser for SQLite](https://sqlitebrowser.org/)
+  圖形介面像 Excel 一樣編輯。重跑 `run` 靠 sha256 去重，不會覆蓋你手改過的舊資料。
+- **畫圖**：Python（pandas + matplotlib/plotly）、Excel 匯入、或 BI 工具
+  （Power BI / Tableau / Metabase / Grafana）皆可直接連 SQLite。
+
+附一支範例（先 `pip install matplotlib`）：
+
+```bash
+python examples/plot_trend.py "存款" --db fsc_news.sqlite   # 輸出 trend.png
+```
+
 ## 下一步（需要實際檔案才能做）
 
 `cells` 是通用長表，能容納任何格式。等本機跑過、看到真實 Excel 後，
