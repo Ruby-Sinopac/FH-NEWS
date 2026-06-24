@@ -1,0 +1,12 @@
+# 下載的原始 Excel 與產出的資料庫不進版控
+data/raw/
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env

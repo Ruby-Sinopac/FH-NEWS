@@ -1,0 +1,18 @@
+# 複製成 config.yaml 後依實際情況調整
+#
+# start_urls：要爬的起始頁。可放多個。
+#   - 你提供的那一頁是「單篇公告」，附件 Excel 連結通常就掛在這頁上。
+#   - 若金管會是「每月一篇公告」，請把『列表頁』也加進來，
+#     crawler 會自動把列表頁上連到各月公告（dataserno=...）的連結也一起爬。
+start_urls:
+  - "https://www.banking.gov.tw/ch/home.jsp?id=591&parentpath=0,590&mcustomize=multimessage_view.jsp&dataserno=201805300001&dtable=Disclosure"
+
+# 是否要跟著頁面上的「其他月份公告」連結往下爬一層（抓整個系列時打開）
+follow_article_links: false
+
+# 下載存放位置與資料庫檔名
+raw_dir: "data/raw"
+db_path: "fsc_news.sqlite"
+
+# 兩次請求間的間隔秒數（對政府網站客氣一點，避免被擋）
+request_delay: 1.5
