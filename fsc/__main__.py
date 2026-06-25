@@ -192,15 +192,20 @@ def cmd_probe(cfg: dict) -> None:
     tpl = cfg.get("url_template")
     if not tpl:
         sys.exit("probe 只適用 url_template 模式，請先在 config.yaml 設定 url_template。")
+    import time
+
     pattern: str = tpl["pattern"]
     periods = _iter_periods(tpl.get("start", [107, 4]), tpl.get("end"))
+    delay = float(cfg.get("request_delay", 1.5))
     session = crawler.make_session(verify_ssl=cfg.get("verify_ssl", True))
     base = f"{urlparse(pattern).scheme}://{urlparse(pattern).netloc}/"
     crawler.warm_up(session, base)
 
     print(f"探測 {len(periods)} 個月份（{periods[0][1]} ~ {periods[-1][1]}）：\n")
     good: list[str] = []
-    for code, ym in periods:
+    for i, (code, ym) in enumerate(periods):
+        if i:
+            time.sleep(delay)  # 加間隔，避免被 CDN/WAF 當成攻擊而回 HTML
         url = pattern.replace("{period}", code)
         status, ctype, size, kind = _probe_one(session, url)
         if kind in ("zip", "ole2"):
