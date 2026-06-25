@@ -17,6 +17,7 @@ import datetime as _dt
 import glob
 import os
 import sys
+import time
 from urllib.parse import urlparse
 
 import yaml
@@ -24,10 +25,9 @@ import yaml
 from . import crawler, downloader, parser, database
 
 
-def _iter_periods(start: list[int], end: list[int] | None) -> list[tuple[str, str]]:
-    """產生 (期間代碼, 'YYYY-MM') 清單，從 start 到 end（含）。
+def _iter_periods(start: list[int], end: list[int] | None) -> list[tuple[str, int, int]]:
+    """產生 (‘YYYY-MM’, 民國年, 月) 清單，從 start 到 end（含）。
 
-    期間代碼為民國年接月份、月份不補零，例如 107年4月 → '1074'、107年10月 → '10710'。
     end 為 None 時自動取「今天」的民國年月。
     """
     sy, sm = start
@@ -36,14 +36,22 @@ def _iter_periods(start: list[int], end: list[int] | None) -> list[tuple[str, st
     else:
         today = _dt.date.today()
         ey, em = today.year - 1911, today.month
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, int, int]] = []
     y, m = sy, sm
     while (y, m) <= (ey, em):
-        out.append((f"{y}{m}", f"{y + 1911}-{m:02d}"))
+        out.append((f"{y + 1911}-{m:02d}", y, m))
         m += 1
         if m > 12:
             m, y = 1, y + 1
     return out
+
+
+def _period_codes(y: int, m: int) -> list[str]:
+    """一個月份的候選代碼：不補零與補零兩種（FSC 不同年份規則不一致）。
+
+    例：107年4月 → ['1074', '10704']；114年10月 → ['11410']（兩者相同，去重）。
+    """
+    return list(dict.fromkeys([f"{y}{m}", f"{y}{m:02d}"]))
 
 
 def _build_url(pattern: str, code: str) -> str:
@@ -85,33 +93,38 @@ def _run_template(cfg: dict) -> None:
     crawler.warm_up(session, base)
 
     print(f"範本模式：{len(periods)} 個月份（{periods[0][1]} ~ {periods[-1][1]}）"
-          f"，每月嘗試 {len(patterns)} 種檔名")
+          f"，每月嘗試 {len(patterns)} 種網址 × 補零/不補零代碼")
     with database.connect(db_path) as conn:
         database.init_db(conn)
         new = skip = miss = fail = 0
-        for code, ym in periods:
+        for ym, y, mth in periods:
+            codes = _period_codes(y, mth)
             dl = None
             url = ""
             for pat in patterns:
-                url = _build_url(pat, code)
-                try:
-                    # 多變體嘗試：HTML（軟性404）就快速換下一個變體
-                    dl = downloader.download(
-                        session, url, raw_dir, delay=delay, html_retries=2
-                    )
-                    break
-                except downloader.NotFound:
-                    continue
-                except RuntimeError as exc:
-                    fail += 1
-                    print(f"  ✗ {ym}：{exc}")
-                    dl = "FAIL"
+                for code in codes:
+                    url = _build_url(pat, code)
+                    try:
+                        # 多樣式嘗試：HTML（軟性404）快速換下一個；html_retries=1
+                        dl = downloader.download(
+                            session, url, raw_dir, delay=delay, html_retries=1
+                        )
+                        break
+                    except downloader.NotFound:
+                        time.sleep(delay)  # 換下一個樣式前稍候，對伺服器客氣
+                        continue
+                    except RuntimeError as exc:
+                        fail += 1
+                        print(f"  ✗ {ym}：{exc}")
+                        dl = "FAIL"
+                        break
+                if dl is not None:
                     break
             if dl == "FAIL":
                 continue
             if dl is None:
                 miss += 1
-                print(f"  · {ym}（{code}）不存在，略過")
+                print(f"  · {ym}（{'/'.join(codes)}）不存在，略過")
                 continue
             if database.file_exists(conn, dl.sha256):
                 skip += 1
@@ -243,28 +256,33 @@ def cmd_probe(cfg: dict) -> None:
     crawler.warm_up(session, base)
 
     print(f"探測 {len(periods)} 個月份（{periods[0][1]} ~ {periods[-1][1]}）"
-          f"，每月嘗試 {len(patterns)} 種檔名：\n")
+          f"，每月嘗試 {len(patterns)} 種網址 × 補零/不補零：\n")
     good: list[str] = []
     first = True
-    for code, ym in periods:
+    for ym, y, mth in periods:
+        codes = _period_codes(y, mth)
         hit = None
+        last = (0, "", "", "-", 0, "ERR")
         for vi, pat in enumerate(patterns):
-            if not first:
-                time.sleep(delay)  # 加間隔，避免被 CDN/WAF 當成攻擊
-            first = False
-            status, ctype, size, kind = _probe_one(session, _build_url(pat, code))
-            if kind in ("zip", "ole2"):
-                hit = (vi, status, ctype, size, kind)
+            for code in codes:
+                if not first:
+                    time.sleep(delay)
+                first = False
+                status, ctype, size, kind = _probe_one(session, _build_url(pat, code))
+                last = (vi, code, status, ctype, size, kind)
+                if kind in ("zip", "ole2"):
+                    hit = last
+                    break
+            if hit:
                 break
-            last = (vi, status, ctype, size, kind)
-        vi, status, ctype, size, kind = hit or last
+        vi, code, status, ctype, size, kind = hit or last
         if kind in ("zip", "ole2"):
             good.append(ym)
         flag = {"zip": "✓ 真檔案", "ole2": "✓ 舊版xls", "html": "✗ 找不到(回首頁)",
                 "pdf": "PDF", "unknown": "? 未知", "ERR": "✗ 連線失敗"}.get(kind, kind)
-        tag = f"變體{vi + 1}" if len(patterns) > 1 else ""
-        print(f"  {ym}（{code}）  HTTP {status}  {ctype or '-':<22} "
-              f"{size:>9} bytes  {flag} {tag}")
+        tag = f"樣式{vi + 1}/{code}" if len(patterns) > 1 else code
+        print(f"  {ym}  HTTP {status}  {ctype or '-':<20} "
+              f"{size:>9} bytes  {flag}  [{tag}]")
     print(f"\n可用月份（{len(good)}）：", "、".join(good) if good else "（無）")
     if not good:
         print("→ 沒有任何月份回傳真檔案。請把上面幾行與某個月份的真實下載連結貼給我，"

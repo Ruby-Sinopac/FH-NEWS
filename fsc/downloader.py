@@ -36,8 +36,13 @@ def _guess_filename(url: str, resp: requests.Response) -> str:
     base = os.path.basename(path)
     if base and "." in base:
         return unquote(base)
-    # 退而求其次，用 query 參數組出名字
+    # 下載程式型網址（如 fckdowndoc?file=/xxx.zip&flag=doc）：真檔名在 file 參數
     q = parse_qs(urlparse(url).query)
+    if q.get("file"):
+        fb = os.path.basename(q["file"][0])
+        if fb:
+            return unquote(fb)
+    # 退而求其次，用 query 參數組出名字
     serno = (q.get("dataserno") or q.get("serno") or ["file"])[0]
     return f"{serno}.xlsx"
 
@@ -108,6 +113,12 @@ def download(
                 continue
             sha = hashlib.sha256(content).hexdigest()
             filename = _sanitize(_guess_filename(url, resp))
+            # 保險：副檔名與實際內容不符時補正（避免把 zip 當 xlsx 解析）
+            if not filename.lower().endswith(
+                (".zip", ".xlsx", ".xlsm", ".xls", ".csv", ".ods")
+            ):
+                kind = sniff(content)
+                filename += {"zip": ".zip", "ole2": ".xls", "pdf": ".pdf"}.get(kind, ".zip")
             path = os.path.join(raw_dir, filename)
 
             # 若同名檔已存在且內容相同 → 跳過

@@ -4,11 +4,15 @@
 # 程式會把 {period} 換成「民國年+月」（月份不補零，例：107年4月→1074、
 # 107年10月→10710），從 start 逐月套到 end，不存在的月份（404）自動略過。
 url_template:
-  # 不同月份檔名後綴不一樣，逐月「依序嘗試」這幾種，第一個抓到真檔案的就用。
-  # 若還有月份抓不到，把該月真實下載連結貼來，再把新樣式加進這個清單即可。
+  # 不同月份的網址/檔名規則不一樣，逐月「依序嘗試」這幾種（含補零與不補零代碼），
+  # 第一個抓到真檔案的就用。若還有月份抓不到，把該月真實下載連結貼來再新增樣式。
   patterns:
+    # 近期（userfiles/file，檔名「電子支付帳戶重要資訊揭露」）
     - "https://www.fsc.gov.tw/userfiles/file/BB-{period}_電子支付帳戶重要資訊揭露.zip"
     - "https://www.fsc.gov.tw/userfiles/file/BB-{period}_電子支付帳戶重要資訊揭露(ODS&xlsx格式).zip"
+    # 早期（fckdowndoc 下載程式，檔名「電子支付重要資訊揭露」，無「帳戶」）
+    - "https://www.fsc.gov.tw/fckdowndoc?file=/{period}_電子支付重要資訊揭露.zip&flag=doc"
+    - "https://www.fsc.gov.tw/fckdowndoc?file=/{period}_電子支付帳戶重要資訊揭露.zip&flag=doc"
   start: [107, 4]      # 起始 [民國年, 月]
   end: null            # null = 自動抓到「今天」；或指定 [115, 4]
 
