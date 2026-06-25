@@ -46,35 +46,72 @@ def _iter_periods(start: list[int], end: list[int] | None) -> list[tuple[str, st
     return out
 
 
+def _build_url(pattern: str, code: str) -> str:
+    """把 {period} 代入並把路徑中的 & 編成 %26（與瀏覽器一致；無 query 才處理）。"""
+    url = pattern.replace("{period}", code)
+    if "?" not in url:
+        url = url.replace("&", "%26")
+    return url
+
+
+def _template_patterns(tpl: dict) -> list[str]:
+    """取得網址範本清單。支援單一 pattern 或多個 patterns（檔名變體）。"""
+    pats: list[str] = []
+    if tpl.get("patterns"):
+        pats = list(tpl["patterns"])
+    elif tpl.get("pattern"):
+        pats = [tpl["pattern"]]
+    if not pats:
+        sys.exit("url_template 需要 pattern 或 patterns。")
+    for p in pats:
+        if "{period}" not in p:
+            sys.exit(f"範本必須包含 {{period}} 佔位符：{p}")
+    return pats
+
+
 def _run_template(cfg: dict) -> None:
-    """網址範本模式：照年月逐一套網址下載並入庫。"""
+    """網址範本模式：照年月逐一套網址下載並入庫。
+
+    每個月份會依序嘗試多個檔名變體（patterns），第一個抓到真檔案的就採用。
+    """
     tpl = cfg["url_template"]
-    pattern: str = tpl["pattern"]
-    if "{period}" not in pattern:
-        sys.exit("url_template.pattern 必須包含 {period} 佔位符")
+    patterns = _template_patterns(tpl)
     periods = _iter_periods(tpl.get("start", [107, 4]), tpl.get("end"))
     raw_dir = cfg.get("raw_dir", "data/raw")
     db_path = cfg.get("db_path", "fsc_news.sqlite")
     delay = float(cfg.get("request_delay", 1.5))
     session = crawler.make_session(verify_ssl=cfg.get("verify_ssl", True))
-    base = f"{urlparse(pattern).scheme}://{urlparse(pattern).netloc}/"
-    crawler.warm_up(session, base)  # 先取得 cookie，避免被當成程式請求擋下
+    base = f"{urlparse(patterns[0]).scheme}://{urlparse(patterns[0]).netloc}/"
+    crawler.warm_up(session, base)
 
-    print(f"範本模式：{len(periods)} 個月份（{periods[0][1]} ~ {periods[-1][1]}）")
+    print(f"範本模式：{len(periods)} 個月份（{periods[0][1]} ~ {periods[-1][1]}）"
+          f"，每月嘗試 {len(patterns)} 種檔名")
     with database.connect(db_path) as conn:
         database.init_db(conn)
         new = skip = miss = fail = 0
         for code, ym in periods:
-            url = pattern.replace("{period}", code)
-            try:
-                dl = downloader.download(session, url, raw_dir, delay=delay)
-            except downloader.NotFound:
+            dl = None
+            url = ""
+            for pat in patterns:
+                url = _build_url(pat, code)
+                try:
+                    # 多變體嘗試：HTML（軟性404）就快速換下一個變體
+                    dl = downloader.download(
+                        session, url, raw_dir, delay=delay, html_retries=2
+                    )
+                    break
+                except downloader.NotFound:
+                    continue
+                except RuntimeError as exc:
+                    fail += 1
+                    print(f"  ✗ {ym}：{exc}")
+                    dl = "FAIL"
+                    break
+            if dl == "FAIL":
+                continue
+            if dl is None:
                 miss += 1
                 print(f"  · {ym}（{code}）不存在，略過")
-                continue
-            except RuntimeError as exc:
-                fail += 1
-                print(f"  ✗ {ym}：{exc}")
                 continue
             if database.file_exists(conn, dl.sha256):
                 skip += 1
@@ -156,7 +193,11 @@ def cmd_inspect(cfg: dict, *, url: str | None, period: str | None) -> None:
         tpl = cfg.get("url_template")
         if not (tpl and period):
             sys.exit("請給 --url <網址>，或 --period <期間代碼，如 11408>（需設定 url_template）。")
-        url = tpl["pattern"].replace("{period}", period)
+        pats = _template_patterns(tpl)
+        url = _build_url(pats[0], period)
+        if len(pats) > 1:
+            print("（注意：此期間有多種檔名變體，inspect 只檢視第 1 種；"
+                  "要檢視其他種請用 --url 指定完整網址）\n")
 
     session = crawler.make_session(verify_ssl=cfg.get("verify_ssl", True))
     base = f"{urlparse(url).scheme}://{urlparse(url).netloc}/"
@@ -194,30 +235,40 @@ def cmd_probe(cfg: dict) -> None:
         sys.exit("probe 只適用 url_template 模式，請先在 config.yaml 設定 url_template。")
     import time
 
-    pattern: str = tpl["pattern"]
+    patterns = _template_patterns(tpl)
     periods = _iter_periods(tpl.get("start", [107, 4]), tpl.get("end"))
     delay = float(cfg.get("request_delay", 1.5))
     session = crawler.make_session(verify_ssl=cfg.get("verify_ssl", True))
-    base = f"{urlparse(pattern).scheme}://{urlparse(pattern).netloc}/"
+    base = f"{urlparse(patterns[0]).scheme}://{urlparse(patterns[0]).netloc}/"
     crawler.warm_up(session, base)
 
-    print(f"探測 {len(periods)} 個月份（{periods[0][1]} ~ {periods[-1][1]}）：\n")
+    print(f"探測 {len(periods)} 個月份（{periods[0][1]} ~ {periods[-1][1]}）"
+          f"，每月嘗試 {len(patterns)} 種檔名：\n")
     good: list[str] = []
-    for i, (code, ym) in enumerate(periods):
-        if i:
-            time.sleep(delay)  # 加間隔，避免被 CDN/WAF 當成攻擊而回 HTML
-        url = pattern.replace("{period}", code)
-        status, ctype, size, kind = _probe_one(session, url)
+    first = True
+    for code, ym in periods:
+        hit = None
+        for vi, pat in enumerate(patterns):
+            if not first:
+                time.sleep(delay)  # 加間隔，避免被 CDN/WAF 當成攻擊
+            first = False
+            status, ctype, size, kind = _probe_one(session, _build_url(pat, code))
+            if kind in ("zip", "ole2"):
+                hit = (vi, status, ctype, size, kind)
+                break
+            last = (vi, status, ctype, size, kind)
+        vi, status, ctype, size, kind = hit or last
         if kind in ("zip", "ole2"):
             good.append(ym)
-        flag = {"zip": "✓ 真檔案", "ole2": "✓ 舊版xls", "html": "✗ HTML錯誤頁",
+        flag = {"zip": "✓ 真檔案", "ole2": "✓ 舊版xls", "html": "✗ 找不到(回首頁)",
                 "pdf": "PDF", "unknown": "? 未知", "ERR": "✗ 連線失敗"}.get(kind, kind)
-        print(f"  {ym}（{code}）  HTTP {status}  {ctype or '-':<28} "
-              f"{size:>9} bytes  {flag}")
+        tag = f"變體{vi + 1}" if len(patterns) > 1 else ""
+        print(f"  {ym}（{code}）  HTTP {status}  {ctype or '-':<22} "
+              f"{size:>9} bytes  {flag} {tag}")
     print(f"\n可用月份（{len(good)}）：", "、".join(good) if good else "（無）")
     if not good:
-        print("→ 沒有任何月份回傳真檔案。代表此網址範本對這些月份不適用，"
-              "請把上面幾行貼給我，我據此調整 pattern。")
+        print("→ 沒有任何月份回傳真檔案。請把上面幾行與某個月份的真實下載連結貼給我，"
+              "我據此調整 patterns。")
 
 
 def _probe_one(session, url: str):

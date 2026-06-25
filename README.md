@@ -26,12 +26,14 @@ cp config.example.yaml config.yaml   # Windows: copy config.example.yaml config.
 
 | 欄位 | 說明 |
 |------|------|
-| `url_template.pattern` | 網址範本，用 `{period}` 代表年月。例：`.../BB-{period}_電子支付帳戶重要資訊揭露.zip` |
+| `url_template.patterns` | 網址範本清單，用 `{period}` 代表年月。**不同月份檔名後綴不同**，逐月依序嘗試，第一個抓到真檔案的就用。 |
 | `url_template.start` | 起始 `[民國年, 月]`，例 `[107, 4]`。 |
 | `url_template.end` | 結束 `[民國年, 月]`；留 `null` 代表自動抓到今天。 |
 
 > `{period}` = 民國年接月份、**月份不補零**：107年4月→`1074`、107年10月→`10710`。
-> 不存在的月份（404）會自動略過。
+> 不存在的月份（伺服器回首頁的軟性 404）會自動略過。
+> 已知檔名變體：`電子支付帳戶重要資訊揭露` 與 `電子支付帳戶重要資訊揭露(ODS&xlsx格式)`；
+> 若仍有月份抓不到，用 `python -m fsc inspect --url <真實網址>` 找出新樣式再加進 `patterns`。
 
 **爬頁面模式**：`start_urls`、`follow_article_links`。
 **共用**：`raw_dir`、`db_path`、`request_delay`、`verify_ssl`。

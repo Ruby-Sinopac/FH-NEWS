@@ -70,6 +70,7 @@ def download(
     retries: int = 6,
     delay: float = 1.5,
     referer: str | None = None,
+    html_retries: int = 3,
 ) -> Downloaded:
     """下載單一檔案到 raw_dir。內容若與既有檔相同則跳過寫入。
 
@@ -101,7 +102,7 @@ def download(
             # 連續多次仍是 HTML 才視為不存在。
             if sniff(content) == "html":
                 html_hits += 1
-                if html_hits >= 4:
+                if html_hits >= html_retries:
                     raise NotFound(url)
                 time.sleep(delay * (html_hits + 1))
                 continue
