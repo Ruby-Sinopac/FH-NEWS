@@ -26,7 +26,7 @@ def _load_config(path: str) -> dict:
 
 
 def _collect_excel_links(cfg: dict) -> list[crawler.Link]:
-    session = crawler.make_session()
+    session = crawler.make_session(verify_ssl=cfg.get("verify_ssl", True))
     start_urls: list[str] = list(cfg.get("start_urls", []))
     follow = cfg.get("follow_article_links", False)
     delay = float(cfg.get("request_delay", 1.5))
@@ -78,7 +78,7 @@ def cmd_run(cfg: dict) -> None:
 
     links = _collect_excel_links(cfg)
     print(f"\n共 {len(links)} 個 Excel 連結，開始下載 + 入庫…")
-    session = crawler.make_session()
+    session = crawler.make_session(verify_ssl=cfg.get("verify_ssl", True))
 
     with database.connect(db_path) as conn:
         database.init_db(conn)

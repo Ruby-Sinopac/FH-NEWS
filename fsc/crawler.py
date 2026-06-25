@@ -43,14 +43,35 @@ class Link:
     text: str
 
 
-def make_session() -> requests.Session:
+def disable_ssl_verify(session: requests.Session) -> None:
+    """關閉 SSL 憑證驗證並抑制相關警告。
+
+    台灣部分政府網站（含 banking.gov.tw）的憑證格式較舊
+    （例如缺少 Subject Key Identifier），新版 OpenSSL 會拒絕驗證。
+    這類站台只用來下載公開資料，關閉驗證是常見且可接受的做法。
+    """
+    session.verify = False
+    try:
+        import urllib3
+
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except Exception:  # pragma: no cover - urllib3 必定隨 requests 安裝
+        pass
+
+
+def make_session(verify_ssl: bool = True) -> requests.Session:
     s = requests.Session()
     s.headers.update(_DEFAULT_HEADERS)
+    if not verify_ssl:
+        disable_ssl_verify(s)
     return s
 
 
 def fetch_html(session: requests.Session, url: str, *, retries: int = 4) -> str:
-    """抓網頁 HTML，附帶 Referer 與指數退避重試。"""
+    """抓網頁 HTML，附帶 Referer 與指數退避重試。
+
+    若遇到 SSL 憑證驗證錯誤，會自動關閉驗證再重試一次。
+    """
     headers = {"Referer": f"{urlparse(url).scheme}://{urlparse(url).netloc}/"}
     delay = 2.0
     last_exc: Exception | None = None
@@ -61,6 +82,15 @@ def fetch_html(session: requests.Session, url: str, *, retries: int = 4) -> str:
             # 金管會頁面為 UTF-8，但偶有未宣告編碼的情況
             resp.encoding = resp.apparent_encoding or "utf-8"
             return resp.text
+        except requests.exceptions.SSLError as exc:
+            last_exc = exc
+            if session.verify:
+                print("    ⚠ 憑證驗證失敗，自動改用『不驗證憑證』重試…")
+                disable_ssl_verify(session)
+                continue  # 立即用同一個 attempt 重試（不算退避）
+            if attempt < retries - 1:
+                time.sleep(delay)
+                delay *= 2
         except requests.RequestException as exc:  # noqa: PERF203
             last_exc = exc
             if attempt < retries - 1:

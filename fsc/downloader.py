@@ -78,6 +78,17 @@ def download(
                 f.write(content)
             time.sleep(delay)
             return Downloaded(url, path, filename, sha, len(content), False)
+        except requests.exceptions.SSLError as exc:
+            last_exc = exc
+            if session.verify:
+                from .crawler import disable_ssl_verify
+
+                print("    ⚠ 下載時憑證驗證失敗，自動改用『不驗證憑證』重試…")
+                disable_ssl_verify(session)
+                continue
+            if attempt < retries - 1:
+                time.sleep(backoff)
+                backoff *= 2
         except requests.RequestException as exc:  # noqa: PERF203
             last_exc = exc
             if attempt < retries - 1:

@@ -16,3 +16,10 @@ db_path: "fsc_news.sqlite"
 
 # 兩次請求間的間隔秒數（對政府網站客氣一點，避免被擋）
 request_delay: 1.5
+
+# 是否驗證 SSL 憑證。
+#   banking.gov.tw 等政府網站憑證格式較舊，新版 Python 可能驗證失敗
+#   （錯誤訊息含 "Missing Subject Key Identifier"）。
+#   留 true 即可——程式偵測到這類錯誤會自動關閉驗證重試；
+#   若想一開始就跳過驗證，改成 false。
+verify_ssl: true
