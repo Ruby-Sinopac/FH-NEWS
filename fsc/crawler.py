@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup
 # Excel 副檔名
 _EXCEL_EXTS = (".xls", ".xlsx", ".xlsm", ".csv")
 
-# 常見的瀏覽器標頭，降低被 403 擋掉的機率
+# 常見的瀏覽器標頭，降低被 403 / WAF 擋掉的機率（盡量貼近真實 Chrome）
 _DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -30,8 +30,16 @@ _DEFAULT_HEADERS = {
         "image/avif,image/webp,*/*;q=0.8"
     ),
     "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
 }
 
 

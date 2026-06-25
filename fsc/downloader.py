@@ -67,8 +67,9 @@ def download(
     url: str,
     raw_dir: str,
     *,
-    retries: int = 4,
+    retries: int = 6,
     delay: float = 1.5,
+    referer: str | None = None,
 ) -> Downloaded:
     """下載單一檔案到 raw_dir。內容若與既有檔相同則跳過寫入。
 
@@ -77,13 +78,13 @@ def download(
     os.makedirs(raw_dir, exist_ok=True)
     base = f"{urlparse(url).scheme}://{urlparse(url).netloc}/"
     req_headers = {
-        "Referer": base,
+        "Referer": referer or base,
         "Accept": (
             "application/zip,application/vnd.ms-excel,"
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
             "application/octet-stream,*/*;q=0.8"
         ),
-    }
+    }  # 其餘 Sec-Fetch / sec-ch-ua 等沿用 session 預設（導覽情境）
     backoff = 2.0
     html_hits = 0
     last_exc: Exception | None = None
@@ -95,13 +96,14 @@ def download(
                 raise NotFound(url)
             resp.raise_for_status()
             content = resp.content
-            # 政府網站可能對程式請求回傳 200 + HTML（WAF 擋檔或軟性 404）。
-            # 先重試幾次（可能 cookie 尚未生效）；連續多次仍是 HTML 才視為不存在。
+            # 政府網站/WAF 可能對程式請求回傳 200 + HTML（擋檔或軟性 404）。
+            # 多重試幾次、間隔逐步拉長（WAF 有時擋一兩次後會放行）；
+            # 連續多次仍是 HTML 才視為不存在。
             if sniff(content) == "html":
                 html_hits += 1
-                if html_hits >= 3:
+                if html_hits >= 4:
                     raise NotFound(url)
-                time.sleep(delay)
+                time.sleep(delay * (html_hits + 1))
                 continue
             sha = hashlib.sha256(content).hexdigest()
             filename = _sanitize(_guess_filename(url, resp))
