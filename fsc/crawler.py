@@ -67,6 +67,25 @@ def make_session(verify_ssl: bool = True) -> requests.Session:
     return s
 
 
+def warm_up(session: requests.Session, base_url: str) -> None:
+    """先訪問首頁取得 cookie，降低被 WAF 以 HTML 頁面擋下的機率。
+
+    部分政府網站對「沒有 cookie / 沒有 Referer 的直接檔案請求」會回傳
+    一頁 HTML 而非真檔案；先逛一次首頁拿到 session cookie 可避免。
+    """
+    for _ in range(2):
+        try:
+            session.get(base_url, timeout=30)
+            return
+        except requests.exceptions.SSLError:
+            if session.verify:
+                disable_ssl_verify(session)
+                continue
+            return
+        except requests.RequestException:
+            return
+
+
 def fetch_html(session: requests.Session, url: str, *, retries: int = 4) -> str:
     """抓網頁 HTML，附帶 Referer 與指數退避重試。
 

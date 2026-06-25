@@ -75,19 +75,34 @@ def download(
     若伺服器以 200 回傳 HTML（軟性 404，該檔其實不存在），視為 NotFound。
     """
     os.makedirs(raw_dir, exist_ok=True)
+    base = f"{urlparse(url).scheme}://{urlparse(url).netloc}/"
+    req_headers = {
+        "Referer": base,
+        "Accept": (
+            "application/zip,application/vnd.ms-excel,"
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
+            "application/octet-stream,*/*;q=0.8"
+        ),
+    }
     backoff = 2.0
+    html_hits = 0
     last_exc: Exception | None = None
     for attempt in range(retries):
         try:
-            resp = session.get(url, timeout=120)
+            resp = session.get(url, timeout=120, headers=req_headers)
             if resp.status_code in (404, 410):
                 # 檔案不存在，不需重試
                 raise NotFound(url)
             resp.raise_for_status()
             content = resp.content
-            # 政府網站常對缺檔回傳 200 + HTML 錯誤頁，視為不存在
+            # 政府網站可能對程式請求回傳 200 + HTML（WAF 擋檔或軟性 404）。
+            # 先重試幾次（可能 cookie 尚未生效）；連續多次仍是 HTML 才視為不存在。
             if sniff(content) == "html":
-                raise NotFound(url)
+                html_hits += 1
+                if html_hits >= 3:
+                    raise NotFound(url)
+                time.sleep(delay)
+                continue
             sha = hashlib.sha256(content).hexdigest()
             filename = _sanitize(_guess_filename(url, resp))
             path = os.path.join(raw_dir, filename)

@@ -17,6 +17,7 @@ import datetime as _dt
 import glob
 import os
 import sys
+from urllib.parse import urlparse
 
 import yaml
 
@@ -56,6 +57,8 @@ def _run_template(cfg: dict) -> None:
     db_path = cfg.get("db_path", "fsc_news.sqlite")
     delay = float(cfg.get("request_delay", 1.5))
     session = crawler.make_session(verify_ssl=cfg.get("verify_ssl", True))
+    base = f"{urlparse(pattern).scheme}://{urlparse(pattern).netloc}/"
+    crawler.warm_up(session, base)  # 先取得 cookie，避免被當成程式請求擋下
 
     print(f"範本模式：{len(periods)} 個月份（{periods[0][1]} ~ {periods[-1][1]}）")
     with database.connect(db_path) as conn:
@@ -153,6 +156,8 @@ def cmd_probe(cfg: dict) -> None:
     pattern: str = tpl["pattern"]
     periods = _iter_periods(tpl.get("start", [107, 4]), tpl.get("end"))
     session = crawler.make_session(verify_ssl=cfg.get("verify_ssl", True))
+    base = f"{urlparse(pattern).scheme}://{urlparse(pattern).netloc}/"
+    crawler.warm_up(session, base)
 
     print(f"探測 {len(periods)} 個月份（{periods[0][1]} ~ {periods[-1][1]}）：\n")
     good: list[str] = []
@@ -175,9 +180,11 @@ def _probe_one(session, url: str):
     """回傳 (status, content_type, size, kind)。"""
     import requests
 
+    base = f"{urlparse(url).scheme}://{urlparse(url).netloc}/"
+    headers = {"Referer": base, "Accept": "application/zip,application/octet-stream,*/*;q=0.8"}
     for _ in range(2):
         try:
-            resp = session.get(url, timeout=30, stream=True)
+            resp = session.get(url, timeout=30, stream=True, headers=headers)
             ctype = resp.headers.get("Content-Type", "").split(";")[0]
             chunk = next(resp.iter_content(2048), b"") or b""
             clen = resp.headers.get("Content-Length")
