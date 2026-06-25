@@ -47,6 +47,21 @@ def _sanitize(name: str) -> str:
     return re.sub(r"[^\w.\-()（）一-鿿]+", "_", name).strip("_") or "file"
 
 
+def sniff(content: bytes) -> str:
+    """用開頭位元組判斷內容類型：zip / ole2(舊版xls) / html / pdf / unknown。"""
+    head = content[:512]
+    if head[:2] == b"PK":
+        return "zip"          # .xlsx 也是 zip，這裡統稱 zip
+    if head[:4] == b"\xd0\xcf\x11\xe0":
+        return "ole2"         # 舊版 .xls
+    if head[:4] == b"%PDF":
+        return "pdf"
+    low = head.lstrip().lower()
+    if low.startswith((b"<!doctype", b"<html", b"<?xml", b"<head", b"<meta")):
+        return "html"
+    return "unknown"
+
+
 def download(
     session: requests.Session,
     url: str,
@@ -55,7 +70,10 @@ def download(
     retries: int = 4,
     delay: float = 1.5,
 ) -> Downloaded:
-    """下載單一檔案到 raw_dir。內容若與既有檔相同則跳過寫入。"""
+    """下載單一檔案到 raw_dir。內容若與既有檔相同則跳過寫入。
+
+    若伺服器以 200 回傳 HTML（軟性 404，該檔其實不存在），視為 NotFound。
+    """
     os.makedirs(raw_dir, exist_ok=True)
     backoff = 2.0
     last_exc: Exception | None = None
@@ -67,6 +85,9 @@ def download(
                 raise NotFound(url)
             resp.raise_for_status()
             content = resp.content
+            # 政府網站常對缺檔回傳 200 + HTML 錯誤頁，視為不存在
+            if sniff(content) == "html":
+                raise NotFound(url)
             sha = hashlib.sha256(content).hexdigest()
             filename = _sanitize(_guess_filename(url, resp))
             path = os.path.join(raw_dir, filename)

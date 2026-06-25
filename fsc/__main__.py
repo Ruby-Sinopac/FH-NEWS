@@ -145,6 +145,57 @@ def cmd_crawl(cfg: dict) -> None:
               "並視情況開啟 follow_article_links）")
 
 
+def cmd_probe(cfg: dict) -> None:
+    """診斷：逐月檢查 url_template 的每個網址實際回傳什麼（不寫入資料庫）。"""
+    tpl = cfg.get("url_template")
+    if not tpl:
+        sys.exit("probe 只適用 url_template 模式，請先在 config.yaml 設定 url_template。")
+    pattern: str = tpl["pattern"]
+    periods = _iter_periods(tpl.get("start", [107, 4]), tpl.get("end"))
+    session = crawler.make_session(verify_ssl=cfg.get("verify_ssl", True))
+
+    print(f"探測 {len(periods)} 個月份（{periods[0][1]} ~ {periods[-1][1]}）：\n")
+    good: list[str] = []
+    for code, ym in periods:
+        url = pattern.replace("{period}", code)
+        status, ctype, size, kind = _probe_one(session, url)
+        if kind in ("zip", "ole2"):
+            good.append(ym)
+        flag = {"zip": "✓ 真檔案", "ole2": "✓ 舊版xls", "html": "✗ HTML錯誤頁",
+                "pdf": "PDF", "unknown": "? 未知", "ERR": "✗ 連線失敗"}.get(kind, kind)
+        print(f"  {ym}（{code}）  HTTP {status}  {ctype or '-':<28} "
+              f"{size:>9} bytes  {flag}")
+    print(f"\n可用月份（{len(good)}）：", "、".join(good) if good else "（無）")
+    if not good:
+        print("→ 沒有任何月份回傳真檔案。代表此網址範本對這些月份不適用，"
+              "請把上面幾行貼給我，我據此調整 pattern。")
+
+
+def _probe_one(session, url: str):
+    """回傳 (status, content_type, size, kind)。"""
+    import requests
+
+    for _ in range(2):
+        try:
+            resp = session.get(url, timeout=30, stream=True)
+            ctype = resp.headers.get("Content-Type", "").split(";")[0]
+            chunk = next(resp.iter_content(2048), b"") or b""
+            clen = resp.headers.get("Content-Length")
+            size = int(clen) if clen and clen.isdigit() else len(chunk)
+            resp.close()
+            if resp.status_code in (404, 410):
+                return resp.status_code, ctype, size, "html"
+            return resp.status_code, ctype, size, downloader.sniff(chunk)
+        except requests.exceptions.SSLError:
+            if session.verify:
+                crawler.disable_ssl_verify(session)
+                continue
+            return "-", "", 0, "ERR"
+        except requests.RequestException:
+            return "-", "", 0, "ERR"
+    return "-", "", 0, "ERR"
+
+
 def cmd_run(cfg: dict) -> None:
     if cfg.get("url_template"):
         return _run_template(cfg)
@@ -230,12 +281,14 @@ def cmd_load(cfg: dict) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="fsc", description="金管會月報 Excel 爬取入庫工具")
-    ap.add_argument("command", choices=["crawl", "run", "load"], help="要執行的動作")
+    ap.add_argument("command", choices=["run", "probe", "crawl", "load"],
+                    help="要執行的動作（probe=診斷每月網址回傳什麼）")
     ap.add_argument("--config", default="config.yaml", help="設定檔路徑")
     args = ap.parse_args(argv)
 
     cfg = _load_config(args.config)
-    {"crawl": cmd_crawl, "run": cmd_run, "load": cmd_load}[args.command](cfg)
+    {"run": cmd_run, "probe": cmd_probe, "crawl": cmd_crawl,
+     "load": cmd_load}[args.command](cfg)
 
 
 if __name__ == "__main__":
