@@ -1,14 +1,19 @@
 """命令列入口。
 
 用法：
+  python -m fsc run     [--config config.yaml]   # 下載 + 入庫（完整流程）
   python -m fsc crawl   [--config config.yaml]   # 只列出找到的 Excel 連結（檢查用）
-  python -m fsc run     [--config config.yaml]   # 爬取 + 下載 + 入庫（完整流程）
   python -m fsc load    [--config config.yaml]   # 只把 data/raw 下已下載的檔案入庫
+
+run 有兩種模式，依設定檔自動選擇：
+  - 有 url_template → 「網址範本」模式：照年月套網址逐月下載（適用 fsc.gov.tw）
+  - 否則           → 「爬頁面」模式：從 start_urls 找 Excel 連結
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import glob
 import os
 import sys
@@ -16,6 +21,75 @@ import sys
 import yaml
 
 from . import crawler, downloader, parser, database
+
+
+def _iter_periods(start: list[int], end: list[int] | None) -> list[tuple[str, str]]:
+    """產生 (期間代碼, 'YYYY-MM') 清單，從 start 到 end（含）。
+
+    期間代碼為民國年接月份、月份不補零，例如 107年4月 → '1074'、107年10月 → '10710'。
+    end 為 None 時自動取「今天」的民國年月。
+    """
+    sy, sm = start
+    if end:
+        ey, em = end
+    else:
+        today = _dt.date.today()
+        ey, em = today.year - 1911, today.month
+    out: list[tuple[str, str]] = []
+    y, m = sy, sm
+    while (y, m) <= (ey, em):
+        out.append((f"{y}{m}", f"{y + 1911}-{m:02d}"))
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+    return out
+
+
+def _run_template(cfg: dict) -> None:
+    """網址範本模式：照年月逐一套網址下載並入庫。"""
+    tpl = cfg["url_template"]
+    pattern: str = tpl["pattern"]
+    if "{period}" not in pattern:
+        sys.exit("url_template.pattern 必須包含 {period} 佔位符")
+    periods = _iter_periods(tpl.get("start", [107, 4]), tpl.get("end"))
+    raw_dir = cfg.get("raw_dir", "data/raw")
+    db_path = cfg.get("db_path", "fsc_news.sqlite")
+    delay = float(cfg.get("request_delay", 1.5))
+    session = crawler.make_session(verify_ssl=cfg.get("verify_ssl", True))
+
+    print(f"範本模式：{len(periods)} 個月份（{periods[0][1]} ~ {periods[-1][1]}）")
+    with database.connect(db_path) as conn:
+        database.init_db(conn)
+        new = skip = miss = fail = 0
+        for code, ym in periods:
+            url = pattern.replace("{period}", code)
+            try:
+                dl = downloader.download(session, url, raw_dir, delay=delay)
+            except downloader.NotFound:
+                miss += 1
+                print(f"  · {ym}（{code}）不存在，略過")
+                continue
+            except RuntimeError as exc:
+                fail += 1
+                print(f"  ✗ {ym}：{exc}")
+                continue
+            if database.file_exists(conn, dl.sha256):
+                skip += 1
+                print(f"  = {ym} 已存在，跳過")
+                continue
+            try:
+                cells = parser.read_cells(dl.path)
+            except RuntimeError as exc:
+                fail += 1
+                print(f"  ✗ {ym} 解析失敗：{exc}")
+                continue
+            database.insert_file(
+                conn, url=url, filename=dl.filename, sha256=dl.sha256,
+                period=ym, size_bytes=dl.size, cells=cells,
+            )
+            new += 1
+            print(f"  ✓ {ym}  {dl.filename}  格子數={len(cells)}")
+        print(f"\n完成：新增 {new}、已存在 {skip}、不存在 {miss}、失敗 {fail}。資料庫：{db_path}")
 
 
 def _load_config(path: str) -> dict:
@@ -72,6 +146,8 @@ def cmd_crawl(cfg: dict) -> None:
 
 
 def cmd_run(cfg: dict) -> None:
+    if cfg.get("url_template"):
+        return _run_template(cfg)
     raw_dir = cfg.get("raw_dir", "data/raw")
     db_path = cfg.get("db_path", "fsc_news.sqlite")
     delay = float(cfg.get("request_delay", 1.5))

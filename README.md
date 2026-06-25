@@ -1,41 +1,51 @@
 # FH-NEWS — 金管會月報 Excel 入庫工具
 
-把金管會（banking.gov.tw）每月「單獨公布的 Excel」自動抓下來，
-彙整進一個 **SQLite** 資料庫，方便後續查詢與分析。
+把金管會每月公布的報表（Excel / ZIP）自動抓下來，彙整進一個
+**SQLite** 資料庫，方便後續查詢、畫圖與分析。
 
-> ⚠️ **網路限制**：Claude Code on the web 的雲端環境預設網路政策**擋住
-> `banking.gov.tw`**，所以爬取（`run` / `crawl`）需要在**你自己的本機**執行。
-> 若要在 web 環境直接跑，需先調整環境的網路政策放行該網域
-> （見 https://code.claude.com/docs/en/claude-code-on-the-web ）。
-> 純解析入庫（`load`）不需網路，任何環境都能跑。
+支援兩種抓取模式（`run` 依設定檔自動選擇）：
+
+- **網址範本模式**（建議）：對 `fsc.gov.tw` 這種**固定命名規則**的檔案，
+  照「年月」直接套網址逐月下載，免爬頁面。ZIP 會自動解壓讀裡面的 Excel/CSV。
+- **爬頁面模式**：對 `banking.gov.tw` 這種把連結掛在公告頁的情況，
+  從 `start_urls` 找出 Excel 連結再下載。
+
+> ⚠️ **網路限制**：Claude Code on the web 的雲端環境預設**擋住政府網域**，
+> 所以 `run` / `crawl` 需在**你自己的本機**執行。純解析入庫（`load`）免連網。
 
 ## 安裝
 
 ```bash
 pip install -r requirements.txt
-cp config.example.yaml config.yaml   # 再依需求編輯
+cp config.example.yaml config.yaml   # Windows: copy config.example.yaml config.yaml
 ```
 
 ## 設定（config.yaml）
 
+**網址範本模式**（電子支付帳戶揭露報表，已預設好）：
+
 | 欄位 | 說明 |
 |------|------|
-| `start_urls` | 起始頁。可放單篇公告頁，或「列表頁」。 |
-| `follow_article_links` | 是否自動跟著頁面上「其他月份公告」連結往下爬一層（抓整個系列時開啟）。 |
-| `raw_dir` | 下載的 Excel 存放目錄（預設 `data/raw`，已 gitignore）。 |
-| `db_path` | SQLite 檔名（預設 `fsc_news.sqlite`）。 |
-| `request_delay` | 每次請求間隔秒數，對政府網站客氣一點。 |
+| `url_template.pattern` | 網址範本，用 `{period}` 代表年月。例：`.../BB-{period}_電子支付帳戶重要資訊揭露.zip` |
+| `url_template.start` | 起始 `[民國年, 月]`，例 `[107, 4]`。 |
+| `url_template.end` | 結束 `[民國年, 月]`；留 `null` 代表自動抓到今天。 |
+
+> `{period}` = 民國年接月份、**月份不補零**：107年4月→`1074`、107年10月→`10710`。
+> 不存在的月份（404）會自動略過。
+
+**爬頁面模式**：`start_urls`、`follow_article_links`。
+**共用**：`raw_dir`、`db_path`、`request_delay`、`verify_ssl`。
 
 ## 使用
 
 ```bash
-# 1) 先檢查能不能抓到 Excel 連結（不下載，純列出）
-python -m fsc crawl --config config.yaml
-
-# 2) 完整流程：爬取 → 下載 → 入庫
+# 完整流程：下載 → （ZIP 解壓）→ 入庫
 python -m fsc run --config config.yaml
 
-# 3) 若已手動把 Excel 放進 data/raw，只做入庫（免連網）
+# 爬頁面模式可先檢查抓不抓得到連結（不下載）
+python -m fsc crawl --config config.yaml
+
+# 若已手動把檔案放進 data/raw，只做入庫（免連網）
 python -m fsc load --config config.yaml
 ```
 

@@ -1,15 +1,20 @@
 # 複製成 config.yaml 後依實際情況調整
 #
-# start_urls：要爬的起始頁。可放多個。
-#   - 你提供的那一頁是「單篇公告」，附件 Excel 連結通常就掛在這頁上。
-#   - 若金管會是「每月一篇公告」，請把『列表頁』也加進來，
-#     crawler 會自動把列表頁上連到各月公告（dataserno=...）的連結也一起爬。
+# ── 模式一：網址範本（建議，適用 fsc.gov.tw 固定命名的 ZIP/Excel）─────────
+# 程式會把 {period} 換成「民國年+月」（月份不補零，例：107年4月→1074、
+# 107年10月→10710），從 start 逐月套到 end，不存在的月份（404）自動略過。
+url_template:
+  pattern: "https://www.fsc.gov.tw/userfiles/file/BB-{period}_電子支付帳戶重要資訊揭露.zip"
+  start: [107, 4]      # 起始 [民國年, 月]
+  end: null            # null = 自動抓到「今天」；或指定 [115, 4]
+
+# ── 模式二：爬頁面（沒設 url_template 時才會用到）──────────────────────────
+# start_urls：要爬的起始頁；follow_article_links：是否往下爬各月公告連結
 start_urls:
   - "https://www.banking.gov.tw/ch/home.jsp?id=591&parentpath=0,590&mcustomize=multimessage_view.jsp&dataserno=201805300001&dtable=Disclosure"
-
-# 是否要跟著頁面上的「其他月份公告」連結往下爬一層（抓整個系列時打開）
 follow_article_links: false
 
+# ── 共用設定 ──────────────────────────────────────────────────────────────
 # 下載存放位置與資料庫檔名
 raw_dir: "data/raw"
 db_path: "fsc_news.sqlite"
@@ -17,9 +22,7 @@ db_path: "fsc_news.sqlite"
 # 兩次請求間的間隔秒數（對政府網站客氣一點，避免被擋）
 request_delay: 1.5
 
-# 是否驗證 SSL 憑證。
-#   banking.gov.tw 等政府網站憑證格式較舊，新版 Python 可能驗證失敗
-#   （錯誤訊息含 "Missing Subject Key Identifier"）。
-#   留 true 即可——程式偵測到這類錯誤會自動關閉驗證重試；
-#   若想一開始就跳過驗證，改成 false。
+# 是否驗證 SSL 憑證。政府網站憑證格式較舊時可能驗證失敗
+# （錯誤含 "Missing Subject Key Identifier"）。留 true 即可——
+# 程式偵測到這類錯誤會自動關閉驗證重試；想一開始就跳過就改 false。
 verify_ssl: true

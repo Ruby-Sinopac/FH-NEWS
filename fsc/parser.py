@@ -8,7 +8,9 @@
 
 from __future__ import annotations
 
+import io
 import re
+import zipfile
 from dataclasses import dataclass
 
 import pandas as pd
@@ -52,14 +54,71 @@ def _roc_to_ym(roc_year: int, month: int) -> str | None:
     return f"{roc_year + 1911}-{month:02d}"
 
 
-def read_cells(path: str) -> list[Cell]:
-    """讀一個 Excel 的所有工作表，展開成長表的格子清單。"""
-    cells: list[Cell] = []
-    try:
-        sheets = pd.read_excel(path, sheet_name=None, header=0, dtype=str)
-    except Exception as exc:  # 檔案毀損或非 Excel
-        raise RuntimeError(f"無法讀取 Excel：{path}：{exc}") from exc
+_TABLE_EXTS = (".xls", ".xlsx", ".xlsm", ".csv")
 
+
+def read_cells(path: str) -> list[Cell]:
+    """讀一個檔案，展開成長表的格子清單。
+
+    支援 .xls/.xlsx/.xlsm/.csv，以及內含上述檔案的 .zip
+    （金管會 fsc.gov.tw 的揭露報表多為 ZIP 包裝）。
+    """
+    if path.lower().endswith(".zip"):
+        return _read_cells_from_zip(path)
+    with open(path, "rb") as f:
+        return _read_table_bytes(f.read(), path, sheet_prefix="")
+
+
+def _read_cells_from_zip(path: str) -> list[Cell]:
+    """解開 ZIP，讀其中每個 Excel/CSV，合併成格子清單。"""
+    cells: list[Cell] = []
+    found = 0
+    try:
+        zf = zipfile.ZipFile(path)
+    except Exception as exc:
+        raise RuntimeError(f"無法開啟 ZIP：{path}：{exc}") from exc
+    with zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            name = _zip_member_name(info)
+            base = name.rsplit("/", 1)[-1]
+            if base.startswith(("__MACOSX", ".", "~$")):
+                continue
+            if not base.lower().endswith(_TABLE_EXTS):
+                continue
+            found += 1
+            data = zf.read(info)
+            # 以 ZIP 內檔名當 sheet 前綴，避免多檔工作表同名衝突
+            cells.extend(_read_table_bytes(data, base, sheet_prefix=f"{base}::"))
+    if found == 0:
+        raise RuntimeError(f"ZIP 內沒有 Excel/CSV：{path}")
+    return cells
+
+
+def _zip_member_name(info: zipfile.ZipInfo) -> str:
+    """還原 ZIP 成員檔名。台灣壓縮檔常用 cp950 而非 UTF-8。"""
+    if info.flag_bits & 0x800:  # 已標記為 UTF-8
+        return info.filename
+    try:
+        return info.filename.encode("cp437").decode("cp950")
+    except Exception:
+        return info.filename
+
+
+def _read_table_bytes(data: bytes, label: str, *, sheet_prefix: str) -> list[Cell]:
+    """從位元組讀 Excel 或 CSV，回傳格子清單。"""
+    low = label.lower()
+    try:
+        if low.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(data), dtype=str)
+            sheets = {"CSV": df}
+        else:
+            sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, header=0, dtype=str)
+    except Exception as exc:
+        raise RuntimeError(f"無法讀取 {label}：{exc}") from exc
+
+    cells: list[Cell] = []
     for sheet_name, df in sheets.items():
         df = df.dropna(how="all").dropna(axis=1, how="all")
         if df.empty:
@@ -71,7 +130,7 @@ def read_cells(path: str) -> list[Cell]:
                     continue
                 cells.append(
                     Cell(
-                        sheet=str(sheet_name),
+                        sheet=f"{sheet_prefix}{sheet_name}",
                         row=r,
                         col=c,
                         header=headers[c] if c < len(headers) else "",

@@ -12,6 +12,10 @@ from urllib.parse import urlparse, parse_qs, unquote
 import requests
 
 
+class NotFound(Exception):
+    """伺服器回應 404/410：該檔不存在（例如該月份尚未發布）。"""
+
+
 @dataclass
 class Downloaded:
     url: str
@@ -58,6 +62,9 @@ def download(
     for attempt in range(retries):
         try:
             resp = session.get(url, timeout=120)
+            if resp.status_code in (404, 410):
+                # 檔案不存在，不需重試
+                raise NotFound(url)
             resp.raise_for_status()
             content = resp.content
             sha = hashlib.sha256(content).hexdigest()
