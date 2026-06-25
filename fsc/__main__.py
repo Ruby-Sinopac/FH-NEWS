@@ -148,6 +148,45 @@ def cmd_crawl(cfg: dict) -> None:
               "並視情況開啟 follow_article_links）")
 
 
+def cmd_inspect(cfg: dict, *, url: str | None, period: str | None) -> None:
+    """診斷單一網址：印出狀態、標頭、cookie 與 HTML 內文前段，找出被擋原因。"""
+    import requests
+
+    if not url:
+        tpl = cfg.get("url_template")
+        if not (tpl and period):
+            sys.exit("請給 --url <網址>，或 --period <期間代碼，如 11408>（需設定 url_template）。")
+        url = tpl["pattern"].replace("{period}", period)
+
+    session = crawler.make_session(verify_ssl=cfg.get("verify_ssl", True))
+    base = f"{urlparse(url).scheme}://{urlparse(url).netloc}/"
+    crawler.warm_up(session, base)
+    headers = {"Referer": base, "Accept": "application/zip,application/octet-stream,*/*;q=0.8"}
+
+    print(f"網址：{url}\n")
+    try:
+        resp = session.get(url, timeout=60, headers=headers)
+    except requests.exceptions.SSLError:
+        crawler.disable_ssl_verify(session)
+        resp = session.get(url, timeout=60, headers=headers)
+
+    content = resp.content
+    print(f"HTTP 狀態：{resp.status_code}")
+    print(f"內容類型：{resp.headers.get('Content-Type', '-')}")
+    print(f"內容長度：{resp.headers.get('Content-Length', len(content))} bytes（實收 {len(content)}）")
+    print(f"判定：{downloader.sniff(content)}")
+    print(f"session cookie：{dict(session.cookies)}")
+    print("\n— 回應標頭 —")
+    for k, v in resp.headers.items():
+        print(f"  {k}: {v}")
+    print("\n— 內文前 800 字 —")
+    try:
+        text = content.decode(resp.apparent_encoding or "utf-8", errors="replace")
+    except Exception:
+        text = repr(content[:800])
+    print(text[:800])
+
+
 def cmd_probe(cfg: dict) -> None:
     """診斷：逐月檢查 url_template 的每個網址實際回傳什麼（不寫入資料庫）。"""
     tpl = cfg.get("url_template")
@@ -288,12 +327,16 @@ def cmd_load(cfg: dict) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="fsc", description="金管會月報 Excel 爬取入庫工具")
-    ap.add_argument("command", choices=["run", "probe", "crawl", "load"],
-                    help="要執行的動作（probe=診斷每月網址回傳什麼）")
+    ap.add_argument("command", choices=["run", "probe", "inspect", "crawl", "load"],
+                    help="動作（probe=逐月診斷；inspect=檢視單一網址完整回應）")
     ap.add_argument("--config", default="config.yaml", help="設定檔路徑")
+    ap.add_argument("--url", help="inspect 用：要檢視的完整網址")
+    ap.add_argument("--period", help="inspect 用：期間代碼（如 11408），依範本組出網址")
     args = ap.parse_args(argv)
 
     cfg = _load_config(args.config)
+    if args.command == "inspect":
+        return cmd_inspect(cfg, url=args.url, period=args.period)
     {"run": cmd_run, "probe": cmd_probe, "crawl": cmd_crawl,
      "load": cmd_load}[args.command](cfg)
 
