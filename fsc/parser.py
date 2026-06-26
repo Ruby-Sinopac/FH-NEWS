@@ -115,35 +115,59 @@ def _zip_member_name(info: zipfile.ZipInfo) -> str:
         return info.filename
 
 
+# 真正標題列的判斷關鍵字（FSC 報表上方常有標題/單位/資料月份等說明列）
+_HEADER_HINTS = ("名稱", "機構")
+
+
 def _read_table_bytes(data: bytes, label: str, *, sheet_prefix: str) -> list[Cell]:
-    """從位元組讀 Excel 或 CSV，回傳格子清單。"""
+    """從位元組讀 Excel 或 CSV，回傳格子清單（自動跳過上方說明列、抓真正標題列）。"""
     low = label.lower()
     try:
         if low.endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(data), dtype=str)
-            sheets = {"CSV": df}
+            grids = {"CSV": pd.read_csv(io.BytesIO(data), header=None, dtype=str)}
         else:
-            sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, header=0, dtype=str)
+            grids = pd.read_excel(
+                io.BytesIO(data), sheet_name=None, header=None, dtype=str
+            )
     except Exception as exc:
         raise RuntimeError(f"無法讀取 {label}：{exc}") from exc
 
     cells: list[Cell] = []
-    for sheet_name, df in sheets.items():
-        df = df.dropna(how="all").dropna(axis=1, how="all")
-        if df.empty:
-            continue
-        headers = [str(c) for c in df.columns]
-        for r, (_, series) in enumerate(df.iterrows()):
-            for c, val in enumerate(series.tolist()):
-                if pd.isna(val) or str(val).strip() == "":
-                    continue
-                cells.append(
-                    Cell(
-                        sheet=f"{sheet_prefix}{sheet_name}",
-                        row=r,
-                        col=c,
-                        header=headers[c] if c < len(headers) else "",
-                        value=str(val).strip(),
-                    )
+    for sheet_name, grid in grids.items():
+        cells.extend(_grid_to_cells(grid, sheet_prefix, str(sheet_name)))
+    return cells
+
+
+def _find_header_row(grid: pd.DataFrame) -> int:
+    """找真正的標題列：前 20 列中第一個含「名稱/機構」關鍵字的列；找不到回 0。"""
+    for i in range(min(len(grid), 20)):
+        vals = [str(x) for x in grid.iloc[i].tolist() if pd.notna(x)]
+        if any(any(h in v for h in _HEADER_HINTS) for v in vals):
+            return i
+    return 0
+
+
+def _grid_to_cells(grid: pd.DataFrame, sheet_prefix: str, sheet_name: str) -> list[Cell]:
+    grid = grid.dropna(how="all").reset_index(drop=True)
+    if grid.empty:
+        return []
+    hr = _find_header_row(grid)
+    headers = [
+        str(x).strip() if pd.notna(x) and str(x).strip() else f"第{c}欄"
+        for c, x in enumerate(grid.iloc[hr].tolist())
+    ]
+    cells: list[Cell] = []
+    for r, (_, series) in enumerate(grid.iloc[hr + 1:].iterrows()):
+        for c, val in enumerate(series.tolist()):
+            if pd.isna(val) or str(val).strip() == "":
+                continue
+            cells.append(
+                Cell(
+                    sheet=f"{sheet_prefix}{sheet_name}",
+                    row=r,
+                    col=c,
+                    header=headers[c] if c < len(headers) else f"第{c}欄",
+                    value=str(val).strip(),
                 )
+            )
     return cells

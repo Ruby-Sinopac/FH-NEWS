@@ -395,12 +395,15 @@ def cmd_run(cfg: dict) -> None:
         print(f"\n完成：新增 {new}、跳過(已存在) {skip}、失敗 {fail}。資料庫：{db_path}")
 
 
-def cmd_load(cfg: dict) -> None:
+def cmd_load(cfg: dict, *, reset: bool = False) -> None:
     """把 raw_dir 下已存在的 Excel 直接入庫（不連網）。"""
     import hashlib
 
     raw_dir = cfg.get("raw_dir", "data/raw")
     db_path = cfg.get("db_path", "fsc_news.sqlite")
+    if reset and os.path.exists(db_path):
+        os.remove(db_path)
+        print(f"已清空舊資料庫：{db_path}")
     files = sorted(
         glob.glob(os.path.join(raw_dir, "*.xls*"))
         + glob.glob(os.path.join(raw_dir, "*.csv"))
@@ -455,6 +458,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="export 用：機構欄索引（找不到 --label 時的後備，預設 0）")
     ap.add_argument("--from", dest="from_p", help="期間起（YYYY-MM 或 11401）")
     ap.add_argument("--to", dest="to_p", help="期間迄（YYYY-MM 或 11504）")
+    ap.add_argument("--reset", action="store_true",
+                    help="load 用：先清空舊資料庫再重新入庫")
     args = ap.parse_args(argv)
 
     cfg = _load_config(args.config)
@@ -466,8 +471,9 @@ def main(argv: list[str] | None = None) -> None:
                           period_from=args.from_p, period_to=args.to_p)
     if args.command == "columns":
         return cmd_columns(cfg, period_from=args.from_p, period_to=args.to_p)
-    {"run": cmd_run, "probe": cmd_probe, "crawl": cmd_crawl,
-     "load": cmd_load}[args.command](cfg)
+    if args.command == "load":
+        return cmd_load(cfg, reset=args.reset)
+    {"run": cmd_run, "probe": cmd_probe, "crawl": cmd_crawl}[args.command](cfg)
 
 
 if __name__ == "__main__":

@@ -88,9 +88,13 @@ def list_columns(db_path: str, period_from=None, period_to=None) -> None:
 
 
 def _resolve_entity(d, label, label_col):
-    if label and label in d["h"]:
-        e = d["h"].get(label)
-    else:
+    e = None
+    if label:
+        for h, v in d["h"].items():        # 「包含」比對，例 機構名稱→電子支付機構名稱
+            if label in str(h):
+                e = v
+                break
+    if e in (None, ""):
         e = d["c"].get(label_col)
     return str(e).strip() if e not in (None, "") and str(e).strip() else None
 
