@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from . import crawler, downloader, parser, database
+from . import crawler, downloader, parser, database, exporter
 
 
 def _iter_periods(start: list[int], end: list[int] | None) -> list[tuple[str, int, int]]:
@@ -143,6 +143,23 @@ def _run_template(cfg: dict) -> None:
             new += 1
             print(f"  ✓ {ym}  {dl.filename}  格子數={len(cells)}")
         print(f"\n完成：新增 {new}、已存在 {skip}、不存在 {miss}、失敗 {fail}。資料庫：{db_path}")
+
+
+def cmd_export(cfg: dict, *, out: str, label_col: int,
+               period_from: str | None, period_to: str | None) -> None:
+    """把資料庫整理成「往右長、每指標一分頁」的寬表 Excel。"""
+    db_path = cfg.get("db_path", "fsc_news.sqlite")
+    # 期間可用 YYYY-MM 或民國代碼（11401）指定，統一轉成 YYYY-MM
+    pf = parser.guess_period(period_from) or period_from if period_from else None
+    pt = parser.guess_period(period_to) or period_to if period_to else None
+    summary = exporter.export(
+        db_path, out, label_col=label_col, period_from=pf, period_to=pt
+    )
+    ps = summary["periods"]
+    print(f"✓ 已輸出：{summary['out']}")
+    print(f"  工作表（指標）數：{summary['sheets']}")
+    print(f"  期間：{ps[0]} ~ {ps[-1]}（共 {len(ps)} 期）")
+    print(f"  資料筆數：{summary['rows']}")
 
 
 def _load_config(path: str) -> dict:
@@ -370,6 +387,8 @@ def cmd_load(cfg: dict) -> None:
     files = sorted(
         glob.glob(os.path.join(raw_dir, "*.xls*"))
         + glob.glob(os.path.join(raw_dir, "*.csv"))
+        + glob.glob(os.path.join(raw_dir, "*.zip"))
+        + glob.glob(os.path.join(raw_dir, "*.ods"))
     )
     print(f"在 {raw_dir} 找到 {len(files)} 個檔案。")
 
@@ -401,16 +420,26 @@ def cmd_load(cfg: dict) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="fsc", description="金管會月報 Excel 爬取入庫工具")
-    ap.add_argument("command", choices=["run", "probe", "inspect", "crawl", "load"],
-                    help="動作（probe=逐月診斷；inspect=檢視單一網址完整回應）")
+    ap.add_argument("command",
+                    choices=["run", "probe", "inspect", "crawl", "load", "export"],
+                    help="動作（export=整理成寬表 Excel；probe=逐月診斷；"
+                         "inspect=檢視單一網址）")
     ap.add_argument("--config", default="config.yaml", help="設定檔路徑")
     ap.add_argument("--url", help="inspect 用：要檢視的完整網址")
     ap.add_argument("--period", help="inspect 用：期間代碼（如 11408），依範本組出網址")
+    ap.add_argument("--out", default="彙整.xlsx", help="export 用：輸出 Excel 檔名")
+    ap.add_argument("--label-col", type=int, default=0,
+                    help="export 用：機構名稱所在欄索引（0 起算，預設 0）")
+    ap.add_argument("--from", dest="from_p", help="export 用：起始期間（YYYY-MM 或 11401）")
+    ap.add_argument("--to", dest="to_p", help="export 用：結束期間（YYYY-MM 或 11504）")
     args = ap.parse_args(argv)
 
     cfg = _load_config(args.config)
     if args.command == "inspect":
         return cmd_inspect(cfg, url=args.url, period=args.period)
+    if args.command == "export":
+        return cmd_export(cfg, out=args.out, label_col=args.label_col,
+                          period_from=args.from_p, period_to=args.to_p)
     {"run": cmd_run, "probe": cmd_probe, "crawl": cmd_crawl,
      "load": cmd_load}[args.command](cfg)
 

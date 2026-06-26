@@ -28,7 +28,8 @@ class Cell:
 def guess_period(*texts: str) -> str | None:
     """從檔名或標題猜測資料期間，回傳正規化的 'YYYY-MM'。
 
-    支援：民國 10805 / 108年5月 / 108-05、西元 201905 / 2019-05 等。
+    支援：108年5月、西元 2019-05/201905、民國代碼
+    （5碼補零如 11401/10704、4碼不補零如 1151/1074）。
     """
     for t in texts:
         if not t:
@@ -36,15 +37,23 @@ def guess_period(*texts: str) -> str | None:
         # 108年5月 / 108年05月
         m = re.search(r"(\d{2,3})\s*年\s*(\d{1,2})\s*月", t)
         if m:
-            return _roc_to_ym(int(m.group(1)), int(m.group(2)))
+            ym = _roc_to_ym(int(m.group(1)), int(m.group(2)))
+            if ym:
+                return ym
         # 2019-05 / 2019/05 / 201905（西元）
         m = re.search(r"(20\d{2})[-/_]?(\d{2})(?!\d)", t)
         if m:
             return f"{m.group(1)}-{m.group(2)}"
-        # 10805 / 108-05（民國，5~6 碼）
-        m = re.search(r"(?<!\d)(\d{3})[-/_]?(\d{2})(?!\d)", t)
-        if m:
-            return _roc_to_ym(int(m.group(1)), int(m.group(2)))
+        # 民國 5 碼：年(1xx) + 月(2碼)，例 11401→114年1月、10710→107年10月
+        for mm in re.finditer(r"(?<!\d)(1\d{2})(\d{2})(?!\d)", t):
+            ym = _roc_to_ym(int(mm.group(1)), int(mm.group(2)))
+            if ym:
+                return ym
+        # 民國 4 碼：年(1xx) + 月(1碼)，例 1151→115年1月、1074→107年4月
+        for mm in re.finditer(r"(?<!\d)(1\d{2})([1-9])(?!\d)", t):
+            ym = _roc_to_ym(int(mm.group(1)), int(mm.group(2)))
+            if ym:
+                return ym
     return None
 
 

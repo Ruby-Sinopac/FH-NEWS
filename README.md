@@ -49,7 +49,27 @@ python -m fsc crawl --config config.yaml
 
 # 若已手動把檔案放進 data/raw，只做入庫（免連網）
 python -m fsc load --config config.yaml
+
+# 整理成「往右長、每指標一分頁」的寬表 Excel
+python -m fsc export --out 彙整.xlsx
 ```
+
+## 整理成 Excel（export）
+
+把資料庫整理成單一 Excel：**每個指標欄位 = 一個工作表**，每列一個機構，
+各期間由左到右排開（月份往右長），數值盡量轉成數字方便排序與畫圖。
+
+```bash
+python -m fsc export --out 彙整.xlsx                 # 全部期間
+python -m fsc export --from 11401 --to 11504         # 只匯出 114/1 ~ 115/4
+python -m fsc export --label-col 0                   # 指定機構名稱所在欄（預設第 0 欄）
+```
+
+| 參數 | 說明 |
+|------|------|
+| `--out` | 輸出 Excel 檔名（預設 `彙整.xlsx`）。 |
+| `--from` / `--to` | 期間範圍，可用 `YYYY-MM` 或民國代碼 `11401`。 |
+| `--label-col` | 機構名稱所在欄索引（0 起算）。若你的報表機構不在第一欄再調整。 |
 
 ## 資料庫結構
 
