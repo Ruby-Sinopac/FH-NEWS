@@ -56,20 +56,26 @@ python -m fsc export --out 彙整.xlsx
 
 ## 整理成 Excel（export）
 
-把資料庫整理成單一 Excel：**每個指標欄位 = 一個工作表**，每列一個機構，
-各期間由左到右排開（月份往右長），數值盡量轉成數字方便排序與畫圖。
+把資料庫整理成單一 Excel：**指定欄位（如「類別」）的值 = 各工作表**，
+每列一個機構，各欄為「指標 × 期間」，期間由左到右排開（月份往右長）。
+
+先用 `columns` 看欄位名稱，再 `export`：
 
 ```bash
-python -m fsc export --out 彙整.xlsx                 # 全部期間
-python -m fsc export --from 11401 --to 11504         # 只匯出 114/1 ~ 115/4
-python -m fsc export --label-col 0                   # 指定機構名稱所在欄（預設第 0 欄）
+# 1) 列出各分頁有哪些欄位與範例值（找出「類別」「機構名稱」的正確名稱）
+python -m fsc columns
+
+# 2) 類別當工作表、機構當列、只出 114/1~115/4
+python -m fsc export --sheet-by 類別 --label 機構名稱 --from 11401 --to 11504 --out 彙整.xlsx
 ```
 
 | 參數 | 說明 |
 |------|------|
-| `--out` | 輸出 Excel 檔名（預設 `彙整.xlsx`）。 |
+| `--sheet-by` | 當作工作表名稱的欄位（如「類別」）。不給則用原始分頁名。 |
+| `--label` | 當作每列機構的欄位（如「機構名稱」）。找不到時退回 `--label-col`。 |
+| `--label-col` | 機構欄索引（0 起算）的後備值。 |
 | `--from` / `--to` | 期間範圍，可用 `YYYY-MM` 或民國代碼 `11401`。 |
-| `--label-col` | 機構名稱所在欄索引（0 起算）。若你的報表機構不在第一欄再調整。 |
+| `--out` | 輸出 Excel 檔名（預設 `彙整.xlsx`）。 |
 
 ## 資料庫結構
 
