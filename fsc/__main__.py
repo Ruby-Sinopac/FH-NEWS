@@ -159,18 +159,24 @@ def cmd_columns(cfg: dict, *, period_from, period_to) -> None:
 
 
 def cmd_export(cfg: dict, *, out: str, sheet_by: str | None, label: str | None,
-               label_col: int, period_from: str | None, period_to: str | None) -> None:
-    """整理成寬表 Excel：類別→工作表、機構→列、指標×期間往右長。"""
+               label_col: int, metrics: str | None,
+               period_from: str | None, period_to: str | None) -> None:
+    """整理成寬表 Excel。"""
     db_path = cfg.get("db_path", "fsc_news.sqlite")
+    metric_list = [m.strip() for m in metrics.split(",") if m.strip()] if metrics else None
     summary = exporter.export(
         db_path, out, sheet_by=sheet_by, label=label, label_col=label_col,
+        metrics=metric_list,
         period_from=_norm_period(period_from), period_to=_norm_period(period_to),
     )
     ps = summary["periods"]
     print(f"✓ 已輸出：{summary['out']}")
-    print(f"  工作表數：{summary['sheets']}　（{('、'.join(summary['categories']))[:60]}…）")
+    print(f"  工作表數：{summary['sheets']}　（{'、'.join(summary['categories'])}）")
     print(f"  期間：{ps[0]} ~ {ps[-1]}（共 {len(ps)} 期）")
     print(f"  資料筆數：{summary['rows']}")
+    if summary.get("matched"):  # 顯示每個指標實際對應到哪些欄位（確認沒抓錯）
+        for req, hs in summary["matched"].items():
+            print(f"  指標「{req}」對應欄位：{('、'.join(hs)) or '（無）'}")
 
 
 def _load_config(path: str) -> dict:
@@ -442,6 +448,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--sheet-by", dest="sheet_by",
                     help="export 用：當作『工作表名稱』的欄位（如『類別』）")
     ap.add_argument("--label", help="export 用：當作『每列機構』的欄位（如『機構名稱』）")
+    ap.add_argument("--metrics",
+                    help="export 用：只取這些指標，逗號分隔，每個指標=一個工作表"
+                         "（如『使用者人數,當月代理收付實質交易款項金額』）")
     ap.add_argument("--label-col", type=int, default=0,
                     help="export 用：機構欄索引（找不到 --label 時的後備，預設 0）")
     ap.add_argument("--from", dest="from_p", help="期間起（YYYY-MM 或 11401）")
@@ -453,7 +462,7 @@ def main(argv: list[str] | None = None) -> None:
         return cmd_inspect(cfg, url=args.url, period=args.period)
     if args.command == "export":
         return cmd_export(cfg, out=args.out, sheet_by=args.sheet_by, label=args.label,
-                          label_col=args.label_col,
+                          label_col=args.label_col, metrics=args.metrics,
                           period_from=args.from_p, period_to=args.to_p)
     if args.command == "columns":
         return cmd_columns(cfg, period_from=args.from_p, period_to=args.to_p)

@@ -87,6 +87,26 @@ def list_columns(db_path: str, period_from=None, period_to=None) -> None:
             print(f"   第{col}欄  {header}    例：{ex}")
 
 
+def _resolve_entity(d, label, label_col):
+    if label and label in d["h"]:
+        e = d["h"].get(label)
+    else:
+        e = d["c"].get(label_col)
+    return str(e).strip() if e not in (None, "") and str(e).strip() else None
+
+
+def _write_wide(xw, sheet_name, g, periods, index_name, used):
+    """把單一指標的 (entity, period, value) 寫成寬表（列=機構、欄=期間往右）。"""
+    nums = g["value"].map(_to_number)
+    use_num = nums.notna().mean() >= 0.6
+    g = g.assign(v=nums if use_num else g["value"])
+    wide = g.pivot_table(index="entity", columns="period", values="v", aggfunc="first")
+    wide = wide.reindex(list(dict.fromkeys(g["entity"])))
+    wide = wide.reindex([p for p in periods if p in wide.columns], axis=1)
+    wide.index.name = index_name
+    wide.to_excel(xw, sheet_name=_safe_sheet_name(sheet_name, used))
+
+
 def export(
     db_path: str,
     out_path: str,
@@ -94,10 +114,15 @@ def export(
     sheet_by: str | None = None,
     label: str | None = None,
     label_col: int = 0,
+    metrics: list[str] | None = None,
     period_from: str | None = None,
     period_to: str | None = None,
 ) -> dict:
-    """輸出寬表 Excel。回傳統計摘要 dict。"""
+    """輸出寬表 Excel。回傳統計摘要 dict。
+
+    指定 metrics 時：每個指標 = 一個工作表（列=機構、欄=期間往右）。
+    否則 sheet_by 指定的欄值 = 各工作表（欄=指標×期間）。
+    """
     rows = _fetch_rows(db_path, period_from, period_to)
     if not rows:
         raise RuntimeError("篩選後沒有資料可匯出（先 load/run，或檢查期間範圍）。")
@@ -109,6 +134,46 @@ def export(
         if header:
             d["h"][header] = val
         d["c"][col] = val
+
+    # ── 模式 A：只取指定指標，每個指標一個工作表 ──
+    if metrics:
+        records = []  # (metric, entity, period, value)
+        matched: dict[str, set] = {req: set() for req in metrics}
+        for (period, sheet, r), d in rowcells.items():
+            entity = _resolve_entity(d, label, label_col)
+            if not entity:
+                continue
+            for header, val in d["h"].items():
+                if val is None or str(val).strip() == "":
+                    continue
+                for req in metrics:
+                    if req in str(header):   # 含有即視為符合（容忍單位等後綴）
+                        records.append((req, entity, period, val))
+                        matched[req].add(header)
+                        break
+        if not records:
+            raise RuntimeError(
+                "找不到指定指標。請用 `python -m fsc columns` 對照正確欄位名稱。"
+            )
+        df = pd.DataFrame(records, columns=["metric", "entity", "period", "value"])
+        periods = sorted(df["period"].unique())
+        used: set[str] = set()
+        written = 0
+        with pd.ExcelWriter(out_path, engine="openpyxl") as xw:
+            for req in metrics:                      # 依使用者指定順序建工作表
+                g = df[df["metric"] == req]
+                if g.empty:
+                    print(f"  ⚠ 指標「{req}」查無資料，略過")
+                    continue
+                _write_wide(xw, req, g, periods, label or "機構名稱", used)
+                written += 1
+        return {
+            "out": out_path, "sheets": written, "periods": periods,
+            "rows": len(records), "categories": list(metrics),
+            "matched": {k: sorted(v) for k, v in matched.items()},
+        }
+
+    # ── 模式 B：類別（sheet_by）當工作表，欄=指標×期間 ──
 
     records = []  # (category, entity, metric, period, value)
     for (period, sheet, r), d in rowcells.items():
