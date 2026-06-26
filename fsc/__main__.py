@@ -396,25 +396,24 @@ def cmd_load(cfg: dict) -> None:
         database.init_db(conn)
         new, skip, fail = 0, 0, 0
         for path in files:
-            with open(path, "rb") as f:
-                sha = hashlib.sha256(f.read()).hexdigest()
-            if database.file_exists(conn, sha):
-                skip += 1
-                continue
-            try:
-                cells = parser.read_cells(path)
-            except RuntimeError as exc:
-                print(f"  ✗ {exc}")
-                fail += 1
-                continue
             fn = os.path.basename(path)
-            period = parser.guess_period(fn)
-            database.insert_file(
-                conn, url="", filename=fn, sha256=sha, period=period,
-                size_bytes=os.path.getsize(path), cells=cells,
-            )
-            new += 1
-            print(f"  ✓ {fn}  期間={period or '未知'}  格子數={len(cells)}")
+            try:
+                with open(path, "rb") as f:
+                    sha = hashlib.sha256(f.read()).hexdigest()
+                if database.file_exists(conn, sha):
+                    skip += 1
+                    continue
+                cells = parser.read_cells(path)
+                period = parser.guess_period(fn)
+                database.insert_file(
+                    conn, url="", filename=fn, sha256=sha, period=period,
+                    size_bytes=os.path.getsize(path), cells=cells,
+                )
+                new += 1
+                print(f"  ✓ {fn}  期間={period or '未知'}  格子數={len(cells)}")
+            except Exception as exc:  # 單檔出錯不中斷整批
+                print(f"  ✗ {fn}：{type(exc).__name__}: {exc}")
+                fail += 1
         print(f"\n完成：新增 {new}、跳過 {skip}、失敗 {fail}。資料庫：{db_path}")
 
 
